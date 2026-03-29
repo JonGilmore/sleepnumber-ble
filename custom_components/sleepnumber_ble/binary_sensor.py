@@ -16,16 +16,18 @@ from .entity import SleepNumberBLEEntity
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up binary sensor entities."""
     coordinator: SleepNumberBLECoordinator = entry.runtime_data
-    async_add_entities([
-        BedPresenceSensor(coordinator, SIDE_LEFT, "Bed Presence Left"),
-        BedPresenceSensor(coordinator, SIDE_RIGHT, "Bed Presence Right"),
-    ])
+    async_add_entities(
+        [
+            BedPresenceSensor(coordinator, SIDE_LEFT, "Bed Presence Left"),
+            BedPresenceSensor(coordinator, SIDE_RIGHT, "Bed Presence Right"),
+        ]
+    )
 
 
 class BedPresenceSensor(SleepNumberBLEEntity, BinarySensorEntity):

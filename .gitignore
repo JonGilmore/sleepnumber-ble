@@ -14,6 +14,9 @@
 !docs/**
 !hacs.json
 !LICENSE
+!.github/
+!.github/**
+!.pre-commit-config.yaml
 
 # Still ignore compiled files inside allowed dirs
 __pycache__/

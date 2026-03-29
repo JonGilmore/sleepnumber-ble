@@ -68,7 +68,9 @@ class SleepNumberBLEConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
         return self.async_show_form(
             step_id="user",
-            data_schema=config_entries.vol.Schema({
-                config_entries.vol.Required("address"): str,
-            }),
+            data_schema=config_entries.vol.Schema(
+                {
+                    config_entries.vol.Required("address"): str,
+                }
+            ),
         )

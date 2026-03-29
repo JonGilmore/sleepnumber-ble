@@ -13,16 +13,18 @@ from .entity import SleepNumberBLEEntity
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up select entities."""
     coordinator: SleepNumberBLECoordinator = entry.runtime_data
-    async_add_entities([
-        FoundationPresetSelect(coordinator, SIDE_LEFT, "Foundation Preset Left"),
-        FoundationPresetSelect(coordinator, SIDE_RIGHT, "Foundation Preset Right"),
-    ])
+    async_add_entities(
+        [
+            FoundationPresetSelect(coordinator, SIDE_LEFT, "Foundation Preset Left"),
+            FoundationPresetSelect(coordinator, SIDE_RIGHT, "Foundation Preset Right"),
+        ]
+    )
 
 
 class FoundationPresetSelect(SleepNumberBLEEntity, SelectEntity):

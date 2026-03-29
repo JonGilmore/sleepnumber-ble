@@ -60,9 +60,13 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
 
     def _get_device(self):
         """Get the BLE device, trying connectable first."""
-        device = async_ble_device_from_address(self.hass, self.address, connectable=True)
+        device = async_ble_device_from_address(
+            self.hass, self.address, connectable=True
+        )
         if device is None:
-            device = async_ble_device_from_address(self.hass, self.address, connectable=False)
+            device = async_ble_device_from_address(
+                self.hass, self.address, connectable=False
+            )
         return device
 
     def _start_fast_polling(self) -> None:
@@ -118,7 +122,8 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
                 self.data.right_present = result[1]
                 _LOGGER.debug(
                     "Presence changed: L=%s R=%s",
-                    self.data.left_present, self.data.right_present,
+                    self.data.left_present,
+                    self.data.right_present,
                 )
                 self.async_set_updated_data(self.data)
 
@@ -187,7 +192,9 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
             if device is None:
                 raise UpdateFailed(f"Bed {self.address} not available via Bluetooth")
 
-            success = await self.bed.async_set_foundation_position(device, side, head, foot)
+            success = await self.bed.async_set_foundation_position(
+                device, side, head, foot
+            )
             if not success:
                 raise UpdateFailed("Failed to set foundation position")
 
