@@ -18,14 +18,14 @@ The I8/360 FlexFit 2 with BAM firmware 0.4.x uses the MCR binary protocol descri
 
 ## Device Information
 
-| Field | Value |
-|-------|-------|
-| BLE Name | MAC address as string (e.g., `64:db:a0:07:dd:02`) |
-| Manufacturer | Select Comfort/BAM |
-| Model | SMART Sleep Smart Pump |
-| Firmware | 0.4.1d9 |
-| Hardware | EVT3 |
-| WiFi + BLE MAC | Same address for both radios |
+| Field          | Value                                             |
+| -------------- | ------------------------------------------------- |
+| BLE Name       | MAC address as string (e.g., `64:db:a0:07:dd:02`) |
+| Manufacturer   | Select Comfort/BAM                                |
+| Model          | SMART Sleep Smart Pump                            |
+| Firmware       | 0.4.1d9                                           |
+| Hardware       | EVT3                                              |
+| WiFi + BLE MAC | Same address for both radios                      |
 
 ---
 
@@ -33,16 +33,16 @@ The I8/360 FlexFit 2 with BAM firmware 0.4.x uses the MCR binary protocol descri
 
 ### Service
 
-| UUID | Description |
-|------|-------------|
+| UUID                                   | Description      |
+| -------------------------------------- | ---------------- |
 | `ffffd1fd-388d-938b-344a-939d1f6efee0` | MCR UART Service |
 
 ### Characteristics
 
-| Name | UUID | Properties | Handle | Description |
-|------|------|------------|--------|-------------|
-| **MCR TX** | `...fee1` | Notify | 0x0021 | Bed → Client (responses) |
-| **MCR RX** | `...fee2` | Write-Without-Response | 0x0025 | Client → Bed (commands) |
+| Name       | UUID      | Properties             | Handle | Description              |
+| ---------- | --------- | ---------------------- | ------ | ------------------------ |
+| **MCR TX** | `...fee1` | Notify                 | 0x0021 | Bed → Client (responses) |
+| **MCR RX** | `...fee2` | Write-Without-Response | 0x0025 | Client → Bed (commands)  |
 
 **Note:** Despite MCR RX advertising only `write-without-response`, when using an
 ESPHome BLE Proxy, you **must** use `write-with-response` mode. The proxy silently
@@ -50,10 +50,10 @@ drops write-without-response packets.
 
 ### Standard Services Also Present
 
-| UUID | Service |
-|------|---------|
-| `0x1800` | Generic Access (device name, appearance) |
-| `0x1801` | Generic Attribute (service changed indication) |
+| UUID     | Service                                                              |
+| -------- | -------------------------------------------------------------------- |
+| `0x1800` | Generic Access (device name, appearance)                             |
+| `0x1801` | Generic Attribute (service changed indication)                       |
 | `0x180A` | Device Information (manufacturer, model, serial, firmware, hardware) |
 
 ---
@@ -133,6 +133,7 @@ Example: MAC `64:DB:A0:07:DD:02` → MCR address `0xDD02`
 **Must be sent first** before any other commands. The bed ignores queries without this.
 
 ### Request
+
 ```
 cmd=0x02, target=0x0000, sub=0x0000, status=0x02, func=0, payload=8 zero bytes
 ```
@@ -140,6 +141,7 @@ cmd=0x02, target=0x0000, sub=0x0000, status=0x02, func=0, payload=8 zero bytes
 **Hex:** `16 16 02 00 00 00 00 02 00 00 00 08 00 00 00 00 00 00 00 00 00 86`
 
 ### Response
+
 ```
 cmd=0x01, target=BED_ADDR, echo=BED_ADDR, func=0|0x80 (response bit set)
 ```
@@ -157,17 +159,18 @@ frame = build_mcr(cmd=0x02, sub=BED_ADDR, status=0x02, func=18, side=0x0F)
 ```
 
 **Response payload (5 bytes):**
+
 ```
 [pump_on, left_sleep_number, right_sleep_number, left_pumping, right_pumping]
 ```
 
-| Byte | Description | Range |
-|------|-------------|-------|
-| 0 | Pump controller active | 0 or 1 |
-| 1 | Left sleep number | 0-100 |
-| 2 | Right sleep number | 0-100 |
-| 3 | Left side actively pumping | 0 = idle |
-| 4 | Right side actively pumping | 0 = idle |
+| Byte | Description                 | Range    |
+| ---- | --------------------------- | -------- |
+| 0    | Pump controller active      | 0 or 1   |
+| 1    | Left sleep number           | 0-100    |
+| 2    | Right sleep number          | 0-100    |
+| 3    | Left side actively pumping  | 0 = idle |
+| 4    | Right side actively pumping | 0 = idle |
 
 ### Set Sleep Number (func=17)
 
@@ -186,6 +189,7 @@ def build_set_sn(side, value):
 ```
 
 **Important:**
+
 - Only one side can be adjusted at a time
 - Wait for the pump to finish (poll func=18, check bytes 3-4 are both 0) before
   setting the other side
@@ -216,14 +220,14 @@ This identifies the command as targeting the foundation controller, not the pump
 
 ### Preset Values
 
-| Preset | Value | Physical Behavior |
-|--------|-------|-------------------|
-| Favorite | 1 | Moves both heads + feet (whole bed) |
-| Read | 2 | Moves both heads + feet (whole bed) |
-| Watch TV | 3 | Moves both heads + feet (whole bed) |
-| **Flat** | **4** | Lowers THIS side's head + shared feet only |
-| **Zero G** | **5** | Moves both heads + feet (whole bed) |
-| **Snore** | **6** | Raises THIS side's head only, feet go down |
+| Preset     | Value | Physical Behavior                          |
+| ---------- | ----- | ------------------------------------------ |
+| Favorite   | 1     | Moves both heads + feet (whole bed)        |
+| Read       | 2     | Moves both heads + feet (whole bed)        |
+| Watch TV   | 3     | Moves both heads + feet (whole bed)        |
+| **Flat**   | **4** | Lowers THIS side's head + shared feet only |
+| **Zero G** | **5** | Moves both heads + feet (whole bed)        |
+| **Snore**  | **6** | Raises THIS side's head only, feet go down |
 
 ### Foundation Physical Behavior
 
@@ -243,27 +247,27 @@ Tested with `cmd=0x02, sub=BED_ADDR, status=0x02`:
 
 ### Functions That Return Data
 
-| Func | Response Payload | Interpretation |
-|------|-----------------|----------------|
-| **18** | `[pump_on, L_SN, R_SN, L_pump, R_pump]` | **Pump Status** (5 bytes) |
-| **20** | `[sleep_number, pressure]` | Pressure reading (2 bytes) |
-| **26** | `[pump_on, L_SN, R_SN, ?]` | Sleep Number (short, 4 bytes) |
-| 3 | `[0xFE, 0, 0, 0, 0, 0, 0]` | Configuration flags (7 bytes) |
-| 5 | 11 bytes (all zeros when flat) | Foundation positions |
-| 34 | 15+ bytes (split across notifications) | Full system status |
+| Func   | Response Payload                        | Interpretation                |
+| ------ | --------------------------------------- | ----------------------------- |
+| **18** | `[pump_on, L_SN, R_SN, L_pump, R_pump]` | **Pump Status** (5 bytes)     |
+| **20** | `[sleep_number, pressure]`              | Pressure reading (2 bytes)    |
+| **26** | `[pump_on, L_SN, R_SN, ?]`              | Sleep Number (short, 4 bytes) |
+| 3      | `[0xFE, 0, 0, 0, 0, 0, 0]`              | Configuration flags (7 bytes) |
+| 5      | 11 bytes (all zeros when flat)          | Foundation positions          |
+| 34     | 15+ bytes (split across notifications)  | Full system status            |
 
 ### Functions That Return Empty ACK
 
-| Func | Notes |
-|------|-------|
-| 1 | Device ACK |
-| 2 | Device ACK |
-| 6 | Status ACK |
-| 17 | **SET function** (write values) |
-| 21 | **Activate preset** (foundation) |
-| 22 | Preset store |
-| 32 | System setting |
-| 38, 39 | Unknown |
+| Func   | Notes                            |
+| ------ | -------------------------------- |
+| 1      | Device ACK                       |
+| 2      | Device ACK                       |
+| 6      | Status ACK                       |
+| 17     | **SET function** (write values)  |
+| 21     | **Activate preset** (foundation) |
+| 22     | Preset store                     |
+| 32     | System setting                   |
+| 38, 39 | Unknown                          |
 
 ### Functions With No Response
 
@@ -272,6 +276,7 @@ Tested with `cmd=0x02, sub=BED_ADDR, status=0x02`:
 ### Command Type Variations
 
 The same function codes work across all three command types:
+
 - `cmd=0x02` → response has `cmd=0x01`
 - `cmd=0x42` → response has `cmd=0x41`
 - `cmd=0x92` → response has `cmd=0x16`
@@ -286,6 +291,7 @@ Pump operations (firmness) use `cmd=0x02` with `status=0x02`.
 Responses arrive as BLE notifications on MCR TX. Same frame structure as requests.
 
 Key differences in response headers:
+
 - **Byte 8** has bit 7 set (`flags | 0x80`) indicating this is a response
 - **Target/echo** fields contain the bed's MCR address
 - **Status** field contains the bed's device ID (typically `0x01` for pump, `0x41` for foundation)
@@ -294,12 +300,12 @@ Key differences in response headers:
 
 ## Known Addresses
 
-| Address | Meaning |
-|---------|---------|
+| Address  | Meaning                                              |
+| -------- | ---------------------------------------------------- |
 | `0xDD02` | Bed pump/foundation controller (last 2 bytes of MAC) |
-| `0x0002` | BLE client controller (our source ID for pump) |
+| `0x0002` | BLE client controller (our source ID for pump)       |
 | `0x0042` | BLE client controller (our source ID for foundation) |
-| `0x0000` | Broadcast / init target |
+| `0x0000` | Broadcast / init target                              |
 
 ---
 
@@ -349,6 +355,7 @@ frame = build_mcr(cmd=0x02, sub=BED_ADDR, status=0x02, func=24, side=SIDE)
 ```
 
 **Response payload (1 byte):**
+
 - `[1]` = occupied (someone in bed)
 - `[0]` = empty
 
@@ -362,6 +369,7 @@ Thorough analysis of the decompiled app confirms the bed is **purely request/res
 There are no unsolicited push notifications for presence changes or any other state.
 
 Evidence from APK analysis:
+
 - The app's UartManager routes ALL BLE notifications through two paths:
   1. `mo14867s()` - broadcast to observers (but the only observer ignores messages in PERSISTENT mode)
   2. `m15009a()` - match against pending requests (unmatched messages are silently dropped)
