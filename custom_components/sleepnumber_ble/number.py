@@ -13,16 +13,18 @@ from .entity import SleepNumberBLEEntity
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up number entities."""
     coordinator: SleepNumberBLECoordinator = entry.runtime_data
-    async_add_entities([
-        SleepNumberEntity(coordinator, SIDE_LEFT, "Firmness Control Left"),
-        SleepNumberEntity(coordinator, SIDE_RIGHT, "Firmness Control Right"),
-    ])
+    async_add_entities(
+        [
+            SleepNumberEntity(coordinator, SIDE_LEFT, "Firmness Control Left"),
+            SleepNumberEntity(coordinator, SIDE_RIGHT, "Firmness Control Right"),
+        ]
+    )
 
 
 class SleepNumberEntity(SleepNumberBLEEntity, NumberEntity):
@@ -34,7 +36,9 @@ class SleepNumberEntity(SleepNumberBLEEntity, NumberEntity):
     _attr_mode = NumberMode.SLIDER
     _attr_icon = "mdi:bed"
 
-    def __init__(self, coordinator: SleepNumberBLECoordinator, side: int, name: str) -> None:
+    def __init__(
+        self, coordinator: SleepNumberBLECoordinator, side: int, name: str
+    ) -> None:
         """Initialize."""
         super().__init__(coordinator)
         self._side = side
@@ -65,7 +69,9 @@ class HeadPositionEntity(SleepNumberBLEEntity, NumberEntity):
     _attr_mode = NumberMode.SLIDER
     _attr_icon = "mdi:angle-acute"
 
-    def __init__(self, coordinator: SleepNumberBLECoordinator, side: int, name: str) -> None:
+    def __init__(
+        self, coordinator: SleepNumberBLECoordinator, side: int, name: str
+    ) -> None:
         """Initialize."""
         super().__init__(coordinator)
         self._side = side
@@ -90,7 +96,9 @@ class HeadPositionEntity(SleepNumberBLEEntity, NumberEntity):
                 foot = self.coordinator.data.left_foot_position
             else:
                 foot = self.coordinator.data.right_foot_position
-        await self.coordinator.async_set_foundation_position(self._side, int(value), foot)
+        await self.coordinator.async_set_foundation_position(
+            self._side, int(value), foot
+        )
 
 
 class FootPositionEntity(SleepNumberBLEEntity, NumberEntity):
@@ -120,4 +128,6 @@ class FootPositionEntity(SleepNumberBLEEntity, NumberEntity):
         head = 0
         if self.coordinator.data:
             head = self.coordinator.data.left_head_position
-        await self.coordinator.async_set_foundation_position(SIDE_LEFT, head, int(value))
+        await self.coordinator.async_set_foundation_position(
+            SIDE_LEFT, head, int(value)
+        )

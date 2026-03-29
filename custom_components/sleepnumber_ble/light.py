@@ -14,15 +14,17 @@ from .entity import SleepNumberBLEEntity
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up light entities."""
     coordinator: SleepNumberBLECoordinator = entry.runtime_data
-    async_add_entities([
-        UnderbedLightEntity(coordinator),
-    ])
+    async_add_entities(
+        [
+            UnderbedLightEntity(coordinator),
+        ]
+    )
 
 
 class UnderbedLightEntity(SleepNumberBLEEntity, LightEntity):

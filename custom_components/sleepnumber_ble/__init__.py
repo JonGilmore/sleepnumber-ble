@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import logging
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, PLATFORMS
+from .const import PLATFORMS
 from .coordinator import SleepNumberBLECoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-type SleepNumberBLEConfigEntry = ConfigEntry[SleepNumberBLECoordinator]
 
-
-async def async_setup_entry(hass: HomeAssistant, entry: SleepNumberBLEConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Sleep Number BLE from a config entry."""
     address = entry.data["address"]
     coordinator = SleepNumberBLECoordinator(hass, address)
@@ -29,7 +26,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SleepNumberBLEConfigEntr
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: SleepNumberBLEConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     coordinator: SleepNumberBLECoordinator = entry.runtime_data
     await coordinator.async_shutdown()

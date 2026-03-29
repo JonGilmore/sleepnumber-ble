@@ -19,7 +19,7 @@ class SleepNumberBLEEntity(CoordinatorEntity[SleepNumberBLECoordinator]):
         super().__init__(coordinator)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.address)},
-            name=f"Sleep Number Bed",
+            name="Sleep Number Bed",
             manufacturer="Sleep Number",
             model="360",
         )
