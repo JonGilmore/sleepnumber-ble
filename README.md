@@ -78,6 +78,10 @@ WARNING: This project is in an extreme alpha phase. Use at your own risk.
 
 For full protocol details, see [PROTOCOL.md](PROTOCOL.md).
 
+## AI Disclaimer
+
+AI was used to assist in inspecting how the Android APK handles BLE pairing and communication as well as creating documentation and troubleshooting steps. Python was heavily influenced by the use of AI as well.
+
 ## License
 
 This project is not affiliated with Sleep Number Corporation. Use at your own risk.
