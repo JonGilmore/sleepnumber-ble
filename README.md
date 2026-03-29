@@ -1,10 +1,13 @@
 # Sleep Number BLE
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=JonGilmore&repository=sleepnumber-ble&category=Integration)
 
 A Home Assistant custom integration for **local BLE control** of Sleep Number 360 beds. No cloud connection required - communicates directly with the bed's BAM module over Bluetooth Low Energy.
 
-WARNING: This project is in an extreme alpha phase. Use at your own risk.
+> [!WARNING]
+> This project is in an extreme alpha phase. Use at your own risk.
+
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
 ## Features
 
@@ -39,44 +42,44 @@ WARNING: This project is in an extreme alpha phase. Use at your own risk.
 
 ## Entities
 
-| Entity | Type | Description |
-|--------|------|-------------|
-| Firmness Control Left | Number (5-100) | Sleep number for left side |
-| Firmness Control Right | Number (5-100) | Sleep number for right side |
-| Foundation Preset Left | Select | Preset position for left side |
-| Foundation Preset Right | Select | Preset position for right side |
-| Bed Presence Left | Binary Sensor | Occupancy detection for left side |
-| Bed Presence Right | Binary Sensor | Occupancy detection for right side |
-| Underbed Light | Light | On/off control for underbed light |
+| Entity                  | Type           | Description                        |
+| ----------------------- | -------------- | ---------------------------------- |
+| Firmness Control Left   | Number (5-100) | Sleep number for left side         |
+| Firmness Control Right  | Number (5-100) | Sleep number for right side        |
+| Foundation Preset Left  | Select         | Preset position for left side      |
+| Foundation Preset Right | Select         | Preset position for right side     |
+| Bed Presence Left       | Binary Sensor  | Occupancy detection for left side  |
+| Bed Presence Right      | Binary Sensor  | Occupancy detection for right side |
+| Underbed Light          | Light          | On/off control for underbed light  |
 
 ## Foundation Presets
 
-| Preset | Behavior |
-|--------|----------|
-| Flat | Lowers selected side's head + shared feet |
-| Zero G | Raises both heads + feet (whole bed) |
-| Snore | Raises selected side's head slightly |
-| Read | Reading position (whole bed) |
-| Watch TV | TV watching position (whole bed) |
-| Favorite | Saved favorite position (whole bed) |
+| Preset   | Behavior                                  |
+| -------- | ----------------------------------------- |
+| Flat     | Lowers selected side's head + shared feet |
+| Zero G   | Raises both heads + feet (whole bed)      |
+| Snore    | Raises selected side's head slightly      |
+| Read     | Reading position (whole bed)              |
+| Watch TV | TV watching position (whole bed)          |
+| Favorite | Saved favorite position (whole bed)       |
 
 ## Known Limitations
 
 - **No push notifications** - The bed is purely request/response. All state must be polled.
- - Because of this, instant presence detection does _not_ seem feasible (at the moment). Currently, it is polled.
+  - Because of this, instant presence detection does _not_ seem feasible (at the moment). Currently, it is polled.
 - **Preset state** - The bed doesn't report current preset position via BLE. Selectors are fire-and-forget.
 
 ## Tested Hardware
 
-| Field | Value |
-|-------|-------|
-| Bed | I8, Flextop King, 360 FlexFit 2 |
-| BAM Firmware | 0.4.1d9 |
-| BLE Proxy | EverythingSmartHome EP1 |
+| Field        | Value                           |
+| ------------ | ------------------------------- |
+| Bed          | I8, Flextop King, 360 FlexFit 2 |
+| BAM Firmware | 0.4.1d9                         |
+| BLE Proxy    | EverythingSmartHome EP1         |
 
 ## Protocol Documentation
 
-For full protocol details, see [PROTOCOL.md](PROTOCOL.md).
+For full protocol details, see [PROTOCOL.md](docs/PROTOCOL.md).
 
 ## AI Disclaimer
 
