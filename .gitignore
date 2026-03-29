@@ -1,0 +1,20 @@
+# Ignore everything
+*
+
+# Allow the integration
+!custom_components/
+!custom_components/sleepnumber_ble/
+!custom_components/sleepnumber_ble/**
+
+# Allow docs
+!PROTOCOL.md
+!README.md
+!.gitignore
+!docs/
+!docs/**
+!hacs.json
+!LICENSE
+
+# Still ignore compiled files inside allowed dirs
+__pycache__/
+*.pyc

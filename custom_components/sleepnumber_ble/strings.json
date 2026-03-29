@@ -1,0 +1,21 @@
+{
+  "config": {
+    "flow_title": "Sleep Number Bed ({name})",
+    "step": {
+      "confirm": {
+        "title": "Sleep Number BLE",
+        "description": "Found Sleep Number bed: {name}. Do you want to set it up?"
+      },
+      "user": {
+        "title": "Sleep Number BLE",
+        "description": "Enter the BLE MAC address of your Sleep Number bed.",
+        "data": {
+          "address": "MAC Address"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This bed is already configured."
+    }
+  }
+}

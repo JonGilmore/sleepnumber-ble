@@ -1,0 +1,18 @@
+{
+  "domain": "sleepnumber_ble",
+  "name": "Sleep Number BLE",
+  "codeowners": ["@jonmaddox"],
+  "config_flow": true,
+  "dependencies": ["bluetooth_adapters"],
+  "documentation": "https://github.com/jonmaddox/ha-sleepnumber-ble",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "requirements": ["bleak-retry-connector>=3.0.0"],
+  "bluetooth": [
+    {
+      "service_uuid": "ffffd1fd-388d-938b-344a-939d1f6efee0",
+      "connectable": true
+    }
+  ],
+  "version": "0.1.0"
+}
