@@ -245,44 +245,70 @@ This identifies the command as targeting the foundation controller, not the pump
 
 Tested with `cmd=0x02, sub=BED_ADDR, status=0x02`:
 
-### Functions That Return Data
+### Pump Functions (cmd=0x02, status=0x02)
 
-| Func   | Response Payload                        | Interpretation                |
-| ------ | --------------------------------------- | ----------------------------- |
-| **18** | `[pump_on, L_SN, R_SN, L_pump, R_pump]` | **Pump Status** (5 bytes)     |
-| **20** | `[sleep_number, pressure]`              | Pressure reading (2 bytes)    |
-| **26** | `[pump_on, L_SN, R_SN, ?]`              | Sleep Number (short, 4 bytes) |
-| 3      | `[0xFE, 0, 0, 0, 0, 0, 0]`              | Configuration flags (7 bytes) |
-| 5      | 11 bytes (all zeros when flat)          | Foundation positions          |
-| 34     | 15+ bytes (split across notifications)  | Full system status            |
+| Func   | Response Payload                        | Interpretation                            |
+| ------ | --------------------------------------- | ----------------------------------------- |
+| **18** | `[pump_on, L_SN, R_SN, L_pump, R_pump]` | **Pump Status** (5 bytes)                 |
+| **24** | `[0 or 1]` per side                     | **Bed Presence** (0=empty, 1=occupied)    |
+| **26** | `[pump_on, L_SN, R_SN, ?]`              | Sleep Number short (4 bytes)              |
+| 3      | `[0xFE, 0, 0, 0, 0, 0, 0]`              | Config/capability flags (7 bytes)         |
+| 4      | 14 bytes (left only)                    | Unknown                                   |
+| 5      | 11 bytes (zeros when flat)              | Foundation positions (not side-dependent) |
+| 19     | `[5, 5]`                                | Memory/favorite or pressure reference     |
+| 20     | `[5, 5]`                                | Pressure reading or foot warming ref      |
+| 22     | `[90, 19, 4, 160, 49, 1, 2, 40]` (left) | **Stored preset positions** (8 bytes)     |
+| 25     | `[0 or 1]` per side                     | Bed presence (duplicate of func=24)       |
+| 34     | `[0, 0, 0, 4, 160, 83, 20, 88]`         | Full system status (15 bytes, fragmented) |
+| 39     | `[0, 0, 0, 0, 0]` (left only)           | Unknown                                   |
 
-### Functions That Return Empty ACK
+### Foundation Functions (cmd=0x42, status=0x42)
 
-| Func   | Notes                            |
-| ------ | -------------------------------- |
-| 1      | Device ACK                       |
-| 2      | Device ACK                       |
-| 6      | Status ACK                       |
-| 17     | **SET function** (write values)  |
-| 21     | **Activate preset** (foundation) |
-| 22     | Preset store                     |
-| 32     | System setting                   |
-| 38, 39 | Unknown                          |
+| Func   | Response Payload                        | Interpretation                             |
+| ------ | --------------------------------------- | ------------------------------------------ |
+| **18** | `[67, 100, 100, 76, 76, 0, 0, 0]` (15b) | **Foundation Status** (positions/features) |
+| **21** | (empty ACK)                             | **Activate Preset** (write command)        |
+| 3      | `[254]` (left), `[255]` (right)         | Device capability flags                    |
+| 5      | 11 bytes (zeros when flat)              | Foundation positions                       |
+| 17     | (empty ACK)                             | **SET position** (write, see safety note)  |
+| 19     | (empty ACK)                             | Foundation outlet control                  |
+| 20     | `[0, 0, 0]` (right only)                | Foot warming status (0s = not installed)   |
+| 22     | (empty ACK)                             | Store preset                               |
+| 26     | `[67, 0, 0, 0, 0, 0, 0, 0]` (11 bytes)  | Massage status (zeros = off)               |
 
-### Functions With No Response
+### Other Command Types
 
-4, 7-16, 19, 23-25, 27-31, 33, 35-37, 40
+| Cmd  | Func | Response                   | Interpretation      |
+| ---- | ---- | -------------------------- | ------------------- |
+| 0x92 | 19   | `[outlet_state, pressure]` | Smart outlet status |
+
+### Pump Empty ACK Functions (cmd=0x02)
+
+| Func | Notes                                |
+| ---- | ------------------------------------ |
+| 1    | Device ACK                           |
+| 2    | ForceIdle / interrupt adjustment     |
+| 6    | Status ACK                           |
+| 17   | **SET sleep number** (write command) |
+| 32   | System setting                       |
 
 ### Command Type Variations
 
-The same function codes work across all three command types:
+Different command types target different subsystems:
 
-- `cmd=0x02` → response has `cmd=0x01`
-- `cmd=0x42` → response has `cmd=0x41`
-- `cmd=0x92` → response has `cmd=0x16`
+| Cmd    | Status | Response Prefix | Subsystem         |
+| ------ | ------ | --------------- | ----------------- |
+| `0x02` | `0x02` | `0x01`          | Pump/pressure     |
+| `0x42` | `0x42` | `0x41`          | Foundation/motors |
+| `0x32` | `0x32` | —               | Sense & Do        |
+| `0x72` | `0x72` | —               | Device management |
+| `0x92` | `0x92` | `0x16`          | Smart outlet      |
 
-Foundation operations (presets, positions) use `cmd=0x42` with `status=0x42`.
-Pump operations (firmness) use `cmd=0x02` with `status=0x02`.
+### Safety Warning
+
+> **DO NOT send func=17 with cmd=0x42 (foundation SET) without a properly formatted
+> payload.** The bed will interpret missing or zero payload bytes as position values and
+> attempt to move actuators to extreme positions, potentially damaging the motors.
 
 ---
 

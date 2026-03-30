@@ -14,18 +14,21 @@ from bleak_retry_connector import establish_connection
 from .const import (
     MCR_CMD_FOUNDATION,
     MCR_CMD_PUMP,
+    MCR_CMD_SMART_OUTLET,
+    MCR_FUNC_FORCE_IDLE,
     MCR_FUNC_INIT,
     MCR_FUNC_OUTLET,
     MCR_FUNC_PRESENCE,
     MCR_FUNC_PRESET,
-    OUTLET_UNDERBED_LIGHT,
     MCR_FUNC_READ,
     MCR_FUNC_SET,
     MCR_RX_UUID,
     MCR_STATUS_FOUNDATION,
     MCR_STATUS_PUMP,
+    MCR_STATUS_SMART_OUTLET,
     MCR_SYNC,
     MCR_TX_UUID,
+    OUTLET_UNDERBED_LIGHT,
     SIDE_LEFT,
     SIDE_RIGHT,
 )
@@ -46,6 +49,8 @@ class BedStatus:
     # Bed presence (occupancy)
     left_present: bool = False
     right_present: bool = False
+    # Underbed light
+    underbed_light_on: bool | None = None
     # Foundation positions (0-100)
     right_head_position: int = 0
     right_foot_position: int = 0
@@ -329,6 +334,31 @@ class SleepNumberBed:
                 else:
                     _LOGGER.debug("Foundation positions not available (may be flat)")
 
+                # Read underbed light state (func=19, cmd=0x92)
+                result = await self._send(
+                    client,
+                    _build_mcr(
+                        MCR_CMD_SMART_OUTLET,
+                        self._bed_addr,
+                        MCR_STATUS_SMART_OUTLET,
+                        MCR_FUNC_OUTLET,
+                        OUTLET_UNDERBED_LIGHT,
+                    ),
+                    timeout=3.0,
+                )
+                for data in result:
+                    if (
+                        len(data) >= 14
+                        and data[0] == 0x16
+                        and data[1] == 0x16
+                        and (data[10] & 0x7F) == MCR_FUNC_OUTLET
+                        and (data[11] & 0x0F) >= 2
+                    ):
+                        # payload[0] is outlet state, payload[1] is pressure/other
+                        status.underbed_light_on = data[12] != 0
+                        _LOGGER.debug("Underbed light: %s", status.underbed_light_on)
+                        break
+
                 return status
             finally:
                 await client.disconnect()
@@ -336,16 +366,54 @@ class SleepNumberBed:
             _LOGGER.exception("Error communicating with bed at %s", self._address)
             return None
 
-    async def async_set_sleep_number(
-        self, device: BLEDevice, side: int, value: int
-    ) -> bool:
-        """Set sleep number for one side."""
-        value = max(0, min(100, value))
+    async def async_force_idle(self, device: BLEDevice) -> bool:
+        """Send ForceIdle to stop any in-progress pump adjustment."""
         try:
             client = await self._connect_and_init(device)
             if client is None:
                 return False
             try:
+                await self._send(
+                    client,
+                    _build_mcr(
+                        MCR_CMD_PUMP,
+                        self._bed_addr,
+                        MCR_STATUS_PUMP,
+                        MCR_FUNC_FORCE_IDLE,
+                        0,
+                    ),
+                    timeout=3.0,
+                )
+                return True
+            finally:
+                await client.disconnect()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug("Error sending force idle", exc_info=True)
+            return False
+
+    async def async_set_sleep_number(
+        self, device: BLEDevice, side: int, value: int
+    ) -> bool:
+        """Set sleep number for one side. Sends ForceIdle first to stop any current adjustment."""
+        value = max(5, min(100, value))
+        try:
+            client = await self._connect_and_init(device)
+            if client is None:
+                return False
+            try:
+                # Stop any in-progress adjustment first
+                await self._send(
+                    client,
+                    _build_mcr(
+                        MCR_CMD_PUMP,
+                        self._bed_addr,
+                        MCR_STATUS_PUMP,
+                        MCR_FUNC_FORCE_IDLE,
+                        0,
+                    ),
+                    timeout=2.0,
+                )
+
                 await self._send(
                     client,
                     _build_mcr(
