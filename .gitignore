@@ -12,6 +12,8 @@
 !.gitignore
 !docs/
 !docs/**
+!brand/
+!brand/**
 !hacs.json
 !LICENSE
 !.github/
