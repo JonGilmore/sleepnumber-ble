@@ -250,15 +250,15 @@ Tested with `cmd=0x02, sub=BED_ADDR, status=0x02`:
 | Func   | Response Payload                        | Interpretation                            |
 | ------ | --------------------------------------- | ----------------------------------------- |
 | **18** | `[pump_on, L_SN, R_SN, L_pump, R_pump]` | **Pump Status** (5 bytes)                 |
-| **24** | `[0 or 1]` per side                     | **Bed Presence** (0=empty, 1=occupied)    |
+| **24** | `[0]` per side (always)                 | Bed Presence flag — **BROKEN, always 0**  |
 | **26** | `[pump_on, L_SN, R_SN, ?]`              | Sleep Number short (4 bytes)              |
 | 3      | `[0xFE, 0, 0, 0, 0, 0, 0]`              | Config/capability flags (7 bytes)         |
 | 4      | 14 bytes (left only)                    | Unknown                                   |
 | 5      | 11 bytes (zeros when flat)              | Foundation positions (not side-dependent) |
-| 19     | `[5, 5]`                                | Memory/favorite or pressure reference     |
-| 20     | `[5, 5]`                                | Pressure reading or foot warming ref      |
+| 19     | `[5, 5]`                                | **SetSleepNumberAsFavorite** (WRITE, stores favorite)  |
+| 20     | `[5, 5]`                                | **GetSleepNumberFavorite** (read, per-side favorite SN) |
 | 22     | `[90, 19, 4, 160, 49, 1, 2, 40]` (left) | **Stored preset positions** (8 bytes)     |
-| 25     | `[0 or 1]` per side                     | Bed presence (duplicate of func=24)       |
+| 25     | `[0]` per side (always)                 | Bed presence (dup of 24) — **also broken**|
 | 34     | `[0, 0, 0, 4, 160, 83, 20, 88]`         | Full system status (15 bytes, fragmented) |
 | 39     | `[0, 0, 0, 0, 0]` (left only)           | Unknown                                   |
 
@@ -276,11 +276,82 @@ Tested with `cmd=0x02, sub=BED_ADDR, status=0x02`:
 | 22     | (empty ACK)                             | Store preset                               |
 | 26     | `[67, 0, 0, 0, 0, 0, 0, 0]` (11 bytes)  | Massage status (zeros = off)               |
 
-### Other Command Types
+### New Pump Functions from APK Decompilation (Not Yet Tested)
 
-| Cmd  | Func | Response                   | Interpretation      |
-| ---- | ---- | -------------------------- | ------------------- |
-| 0x92 | 19   | `[outlet_state, pressure]` | Smart outlet status |
+| Func   | App Class Name          | Type    | Payload                  | Interpretation                             |
+| ------ | ----------------------- | ------- | ------------------------ | ------------------------------------------ |
+| **97** | GetChamberTypesCall     | **READ** | send `[0, 0]`, side=2  | **Chamber types + OCCUPANCY** (8 bytes)    |
+
+**func=97 (GetChamberTypes) is the most promising lead for presence detection.**
+
+From decompiled `GetChamberTypesCall.kt` (`C9871k.java`):
+
+```
+MCR Request:  cmd=0x02, status=0x02, func=97, side=2, payload=[0, 0]
+
+Response (8 bytes):
+  byte[0] = rightChamberPresence   (chamber detected: 0 or 1)
+  byte[1] = rightChamberTypeCode   (0=STANDARD, 1=KID, 2=HEADTILT, 3=GENIE)
+  byte[2] = leftChamberPresence    (chamber detected: 0 or 1)
+  byte[3] = leftChamberTypeCode
+  byte[4] = rightSideOccupancy     ← OCCUPANCY (person in bed)
+  byte[5] = rightSideRefreshState
+  byte[6] = leftSideOccupancy      ← OCCUPANCY (person in bed)
+  byte[7] = leftSideRefreshState
+
+If response < 8 bytes, occupancy fields (bytes 4-7) default to 0.
+```
+
+The app also has a cloud API fallback (`GetChamberTypesResponse`) with identical
+fields: `leftChamberOccupancy`, `rightChamberOccupancy`, `leftChamberRefreshedState`,
+`rightChamberRefreshedState`. Both BLE and cloud return the same structure.
+
+**Note:** side=2 in byte 9 upper nibble is unusual (normally 0=left, 1=right,
+0x0F=both). This may be a "query both chambers" addressing mode.
+
+**Tested 2026-03-30:** Firmware 0.4.x returns only 4 bytes `[1, 0, 1, 0]` —
+chamber presence and type for both sides (both STANDARD, both present), but
+**does NOT include the occupancy bytes (4-7)**. The response is static
+regardless of actual bed occupancy. The app handles this gracefully:
+`bArr.length < 8 ? (byte) 0 : bArr[4]` — occupancy defaults to 0 on short
+responses, and the app falls back to the cloud API for presence.
+
+**Conclusion:** func=97 confirms the bed has two STANDARD chambers but does
+not provide occupancy data on firmware 0.4.x.
+
+### New Foundation Functions from APK Decompilation
+
+| Func   | App Class Name                 | Type     | Interpretation                                |
+| ------ | ------------------------------ | -------- | --------------------------------------------- |
+| **37** | GetFoundationSystemStatusCall  | **READ** | Foundation system status (side=0, no payload) |
+| **40** | GetPinchStateCall              | **READ** | Anti-pinch sensor state (per-side)            |
+| **42** | GetFootWarmingStatusCall       | **READ** | Foot warming temp/status (per-side)           |
+| 36     | (FoundationSystemSetting)      | WRITE    | Foundation system config                      |
+| 41     | SetFootWarmingStatusCall       | WRITE    | Set foot warming (per-side, 3-byte payload)   |
+
+### Sense & Do Functions (cmd=0x32, status=0x32)
+
+"Sense & Do" controls smart outlet integration, **not pressure sensing** (the name is
+misleading). It is a simple feature toggle — no sensor data.
+
+| Func   | App Class Name     | Type     | Interpretation                       |
+| ------ | ------------------ | -------- | ------------------------------------ |
+| **18** | GetSenseAndDoCall  | **READ** | Query outlet on/off (1 byte: isOn)   |
+| 20     | SetSenseAndDoCall  | WRITE    | Toggle outlet on/off (2-byte payload)|
+
+### Smart Outlet Functions (cmd=0x92, status=0x92)
+
+| Func   | App Class Name           | Type     | Interpretation                    |
+| ------ | ------------------------ | -------- | --------------------------------- |
+| **18** | GetSmartOutletStatusCall | **READ** | Query all outlet states           |
+| 19     | SmartOutletChange        | READ     | Outlet state (already documented) |
+
+### Device Management Functions (cmd=0x72, status=0x72)
+
+| Func   | App Class Name           | Type     | Interpretation                    |
+| ------ | ------------------------ | -------- | --------------------------------- |
+| **18** | GetNodeListCall          | **READ** | List connected MCR nodes          |
+| 17     | DoFoundationShortBindCall| WRITE    | Bind/pair foundation (1-byte payload) |
 
 ### Pump Empty ACK Functions (cmd=0x02)
 
@@ -296,13 +367,13 @@ Tested with `cmd=0x02, sub=BED_ADDR, status=0x02`:
 
 Different command types target different subsystems:
 
-| Cmd    | Status | Response Prefix | Subsystem         |
-| ------ | ------ | --------------- | ----------------- |
-| `0x02` | `0x02` | `0x01`          | Pump/pressure     |
-| `0x42` | `0x42` | `0x41`          | Foundation/motors |
-| `0x32` | `0x32` | —               | Sense & Do        |
-| `0x72` | `0x72` | —               | Device management |
-| `0x92` | `0x92` | `0x16`          | Smart outlet      |
+| Cmd    | Status | Response Prefix | Subsystem                                |
+| ------ | ------ | --------------- | ---------------------------------------- |
+| `0x02` | `0x02` | `0x01`          | Pump/pressure                            |
+| `0x42` | `0x42` | `0x41`          | Foundation/motors                        |
+| `0x32` | `0x32` | —               | Sense & Do (smart outlet toggle, NOT sensing) |
+| `0x72` | `0x72` | —               | Device management (node list, binding)   |
+| `0x92` | `0x92` | `0x16`          | Smart outlet                             |
 
 ### Safety Warning
 
@@ -373,19 +444,31 @@ Sleep Number Bed (BLE GATT)
 
 ---
 
-## Bed Presence / Occupancy (func=24)
+## Bed Presence / Occupancy
+
+### func=24/25 — BROKEN (Always Returns 0)
 
 ```python
-# Query per-side: side=0 for left, side=1 for right
+# These do NOT work on firmware 0.4.x
 frame = build_mcr(cmd=0x02, sub=BED_ADDR, status=0x02, func=24, side=SIDE)
 ```
 
-**Response payload (1 byte):**
+Tested 2026-03-30 with controlled in/out-of-bed transitions on both sides.
+func=24 and func=25 both return `[0]` regardless of actual bed occupancy.
+A long-running monitor (sampling every ~15s) confirmed no change across multiple
+get-in/get-out cycles. These are dead on firmware 0.4.x.
 
-- `[1]` = occupied (someone in bed)
-- `[0]` = empty
+### func=97 (GetChamberTypes) — UNTESTED, Promising
 
-func=25 returns identical data and may be redundant.
+The decompiled SleepIQ app reveals `GetChamberTypesCall` (func=97, cmd=0x02),
+which returns an 8-byte response including per-side `leftSideOccupancy` and
+`rightSideOccupancy` fields. This is the same data available through the cloud
+API's `/bed/familyStatus` endpoint (`BedSideStatus.isInBed`).
+
+See "New Pump Functions from APK Decompilation" above for byte layout.
+
+**This has not been tested yet.** It requires sending a 2-byte payload `[0, 0]`
+with side=2 (unusual addressing). The app treats it as a read-only GET call.
 
 ---
 
@@ -407,16 +490,24 @@ notifications received. Polling is the only option.
 
 ---
 
-## Unexplored Areas
+## Unexplored / Partially Explored Areas
 
-- ~~Bed presence/occupancy detection~~ - **SOLVED:** func=24, per-side, see above
-- ~~Push notifications~~ - **NOT SUPPORTED:** bed is purely request/response
-- **Foundation position readback** - func=5 returns 11 bytes but always zeros (may need
+- **Bed presence/occupancy** — **NOT AVAILABLE over BLE on firmware 0.4.x.**
+  func=24/25 always return 0. func=97 returns chamber type only (4 bytes),
+  not the full 8-byte response with occupancy fields. The app falls back to
+  the cloud REST API (`/bed/familyStatus`) for presence on this firmware.
+- ~~Push notifications~~ — **NOT SUPPORTED:** bed is purely request/response
+- **Foundation position readback** — func=5 returns 11 bytes but always zeros (may need
   different addressing or cmd type)
-- **Massage control** - func=17 with cmd=0x42 and 12-byte payload (from decompiled code)
-- **Underbed lights** - mentioned in decompiled code but not yet tested
-- **Foot warming** - temperature control available on some models
-- **Responsive Air** - automatic pressure adjustment feature
+- **Massage control** — func=17 with cmd=0x42 and 12-byte payload (from decompiled code)
+- ~~Underbed lights~~ — **IMPLEMENTED:** cmd=0x92 func=19 for read, cmd=0x42 func=19 for write
+- **Foot warming** — func=42 read, func=41 write (cmd=0x42). Not tested.
+- **Responsive Air** — automatic pressure adjustment feature (Bamkey/FuzionBLE only,
+  not available on MCR firmware 0.4.x)
+- **Foundation system status** — func=37 (cmd=0x42), read. Not tested.
+- **Pinch state** — func=40 (cmd=0x42), anti-pinch sensor. Not tested.
+- **Node list** — func=18 (cmd=0x72), lists connected MCR nodes. Not tested.
+- **Sense & Do** — func=18 (cmd=0x32), smart outlet toggle. Not useful for presence.
 
 ---
 
