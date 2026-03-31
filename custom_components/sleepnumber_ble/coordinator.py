@@ -114,16 +114,39 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
             if self.data is None:
                 return
 
-            left_changed = self.data.left_present != result[0]
-            right_changed = self.data.right_present != result[1]
+            changed = False
 
-            if left_changed or right_changed:
-                self.data.left_present = result[0]
-                self.data.right_present = result[1]
+            # func=24 presence
+            if self.data.left_present != result["left_present"]:
+                self.data.left_present = result["left_present"]
+                changed = True
+            if self.data.right_present != result["right_present"]:
+                self.data.right_present = result["right_present"]
+                changed = True
+
+            # func=97 chamber types / occupancy
+            for attr in (
+                "left_chamber_present",
+                "right_chamber_present",
+                "left_chamber_type",
+                "right_chamber_type",
+                "left_occupancy",
+                "right_occupancy",
+                "left_refresh_state",
+                "right_refresh_state",
+            ):
+                new_val = result.get(attr)
+                if new_val is not None and getattr(self.data, attr) != new_val:
+                    setattr(self.data, attr, new_val)
+                    changed = True
+
+            if changed:
                 _LOGGER.debug(
-                    "Presence changed: L=%s R=%s",
+                    "Presence poll changed: L_pres=%s R_pres=%s " "L_occ=%s R_occ=%s",
                     self.data.left_present,
                     self.data.right_present,
+                    self.data.left_occupancy,
+                    self.data.right_occupancy,
                 )
                 self.async_set_updated_data(self.data)
 

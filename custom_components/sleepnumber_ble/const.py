@@ -44,6 +44,7 @@ PRESET_NAMES = {
 }
 
 MCR_FUNC_PRESENCE = 24
+MCR_FUNC_CHAMBER_TYPES = 97
 MCR_FUNC_OUTLET = 19
 
 # Outlet IDs (byte 9 upper nibble)

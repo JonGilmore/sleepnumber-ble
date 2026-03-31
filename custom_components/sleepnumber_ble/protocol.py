@@ -15,6 +15,7 @@ from .const import (
     MCR_CMD_FOUNDATION,
     MCR_CMD_PUMP,
     MCR_CMD_SMART_OUTLET,
+    MCR_FUNC_CHAMBER_TYPES,
     MCR_FUNC_FORCE_IDLE,
     MCR_FUNC_INIT,
     MCR_FUNC_OUTLET,
@@ -46,7 +47,7 @@ class BedStatus:
     right_sleep_number: int = 0
     left_pumping: bool = False
     right_pumping: bool = False
-    # Bed presence (occupancy)
+    # Bed presence (occupancy) — func=24, broken on firmware 0.4.x
     left_present: bool = False
     right_present: bool = False
     # Underbed light
@@ -56,6 +57,15 @@ class BedStatus:
     right_foot_position: int = 0
     left_head_position: int = 0
     left_foot_position: int = 0
+    # Chamber types / occupancy (func=97) — diagnostic, may not have occupancy on 0.4.x
+    left_chamber_present: int | None = None
+    right_chamber_present: int | None = None
+    left_chamber_type: int | None = None
+    right_chamber_type: int | None = None
+    left_occupancy: int | None = None
+    right_occupancy: int | None = None
+    left_refresh_state: int | None = None
+    right_refresh_state: int | None = None
 
 
 def _mcr_crc(data: bytes) -> int:
@@ -306,6 +316,44 @@ class SleepNumberBed:
                                 status.right_present = present
                             break
 
+                # Read chamber types / occupancy (func=97)
+                result = await self._send(
+                    client,
+                    _build_mcr(
+                        MCR_CMD_PUMP,
+                        self._bed_addr,
+                        MCR_STATUS_PUMP,
+                        MCR_FUNC_CHAMBER_TYPES,
+                        2,  # side=2 per decompiled app
+                        b"\x00\x00",  # 2-byte payload per decompiled app
+                    ),
+                    timeout=5.0,
+                )
+                for data in result:
+                    if (
+                        len(data) >= 12
+                        and data[0] == 0x16
+                        and data[1] == 0x16
+                        and (data[10] & 0x7F) == MCR_FUNC_CHAMBER_TYPES
+                    ):
+                        plen = data[11] & 0x0F
+                        payload = data[12 : 12 + plen]
+                        if len(payload) >= 4:
+                            status.right_chamber_present = payload[0]
+                            status.right_chamber_type = payload[1]
+                            status.left_chamber_present = payload[2]
+                            status.left_chamber_type = payload[3]
+                        if len(payload) >= 8:
+                            status.right_occupancy = payload[4]
+                            status.right_refresh_state = payload[5]
+                            status.left_occupancy = payload[6]
+                            status.left_refresh_state = payload[7]
+                        _LOGGER.debug(
+                            "ChamberTypes: payload=%s",
+                            list(payload),
+                        )
+                        break
+
                 # Read foundation positions (func=5, cmd=0x42, status=0x42)
                 result = await self._send(
                     client,
@@ -466,15 +514,19 @@ class SleepNumberBed:
             _LOGGER.exception("Error setting preset")
             return False
 
-    async def async_read_presence(self, device: BLEDevice) -> tuple[bool, bool] | None:
-        """Lightweight presence-only read. Returns (left_present, right_present)."""
+    async def async_read_presence(self, device: BLEDevice) -> dict | None:
+        """Lightweight presence-only read. Returns dict with presence + chamber data."""
         try:
             client = await self._connect_and_init(device)
             if client is None:
                 return None
             try:
-                left = False
-                right = False
+                result_dict: dict = {
+                    "left_present": False,
+                    "right_present": False,
+                }
+
+                # func=24 presence (broken on 0.4.x but keep reading)
                 for side in [SIDE_LEFT, SIDE_RIGHT]:
                     result = await self._send(
                         client,
@@ -496,12 +548,48 @@ class SleepNumberBed:
                             and (data[11] & 0x0F) >= 1
                         ):
                             present = data[12] != 0
-                            if side == SIDE_LEFT:
-                                left = present
-                            else:
-                                right = present
+                            key = (
+                                "left_present" if side == SIDE_LEFT else "right_present"
+                            )
+                            result_dict[key] = present
                             break
-                return (left, right)
+
+                # func=97 chamber types / occupancy
+                result = await self._send(
+                    client,
+                    _build_mcr(
+                        MCR_CMD_PUMP,
+                        self._bed_addr,
+                        MCR_STATUS_PUMP,
+                        MCR_FUNC_CHAMBER_TYPES,
+                        2,
+                        b"\x00\x00",
+                    ),
+                    timeout=5.0,
+                )
+                for data in result:
+                    if (
+                        len(data) >= 12
+                        and data[0] == 0x16
+                        and data[1] == 0x16
+                        and (data[10] & 0x7F) == MCR_FUNC_CHAMBER_TYPES
+                    ):
+                        plen = data[11] & 0x0F
+                        payload = data[12 : 12 + plen]
+                        if len(payload) >= 4:
+                            result_dict["right_chamber_present"] = payload[0]
+                            result_dict["right_chamber_type"] = payload[1]
+                            result_dict["left_chamber_present"] = payload[2]
+                            result_dict["left_chamber_type"] = payload[3]
+                        if len(payload) >= 8:
+                            result_dict["right_occupancy"] = payload[4]
+                            result_dict["right_refresh_state"] = payload[5]
+                            result_dict["left_occupancy"] = payload[6]
+                            result_dict["left_refresh_state"] = payload[7]
+                        _LOGGER.debug("ChamberTypes (presence poll): %s", list(payload))
+                        break
+
+                return result_dict
             finally:
                 await client.disconnect()
         except Exception:  # pylint: disable=broad-except
