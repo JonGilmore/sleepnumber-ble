@@ -116,12 +116,18 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
 
             changed = False
 
-            # func=24 presence
+            # func=24 presence (broken on 0.4.x, kept for diagnostics)
             if self.data.left_present != result["left_present"]:
                 self.data.left_present = result["left_present"]
                 changed = True
             if self.data.right_present != result["right_present"]:
                 self.data.right_present = result["right_present"]
+                changed = True
+
+            # Underbed light state (auto-light = presence proxy)
+            light_on = result.get("underbed_light_on")
+            if light_on is not None and self.data.underbed_light_on != light_on:
+                self.data.underbed_light_on = light_on
                 changed = True
 
             # func=97 chamber types / occupancy
@@ -142,11 +148,10 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
 
             if changed:
                 _LOGGER.debug(
-                    "Presence poll changed: L_pres=%s R_pres=%s L_occ=%s R_occ=%s",
+                    "Presence poll: light=%s L_pres=%s R_pres=%s",
+                    self.data.underbed_light_on,
                     self.data.left_present,
                     self.data.right_present,
-                    self.data.left_occupancy,
-                    self.data.right_occupancy,
                 )
                 self.async_set_updated_data(self.data)
 

@@ -14,9 +14,9 @@ from bleak_retry_connector import establish_connection
 from .const import (
     MCR_CMD_FOUNDATION,
     MCR_CMD_PUMP,
-    MCR_CMD_SMART_OUTLET,
     MCR_FUNC_CHAMBER_TYPES,
     MCR_FUNC_FORCE_IDLE,
+    MCR_FUNC_FOUNDATION_OUTLET_READ,
     MCR_FUNC_INIT,
     MCR_FUNC_OUTLET,
     MCR_FUNC_PRESENCE,
@@ -26,7 +26,6 @@ from .const import (
     MCR_RX_UUID,
     MCR_STATUS_FOUNDATION,
     MCR_STATUS_PUMP,
-    MCR_STATUS_SMART_OUTLET,
     MCR_SYNC,
     MCR_TX_UUID,
     OUTLET_UNDERBED_LIGHT,
@@ -389,30 +388,11 @@ class SleepNumberBed:
                 else:
                     _LOGGER.debug("Foundation positions not available (may be flat)")
 
-                # Read underbed light state (func=19, cmd=0x92)
-                result = await self._send(
-                    client,
-                    _build_mcr(
-                        MCR_CMD_SMART_OUTLET,
-                        self._bed_addr,
-                        MCR_STATUS_SMART_OUTLET,
-                        MCR_FUNC_OUTLET,
-                        OUTLET_UNDERBED_LIGHT,
-                    ),
-                    timeout=3.0,
-                )
-                for data in result:
-                    if (
-                        len(data) >= 14
-                        and data[0] == 0x16
-                        and data[1] == 0x16
-                        and (data[10] & 0x7F) == MCR_FUNC_OUTLET
-                        and (data[11] & 0x0F) >= 2
-                    ):
-                        # payload[0] is outlet state, payload[1] is pressure/other
-                        status.underbed_light_on = data[12] != 0
-                        _LOGGER.debug("Underbed light: %s", status.underbed_light_on)
-                        break
+                # Read underbed light state via foundation (func=20, side=3)
+                light_state = await self._read_foundation_light(client)
+                if light_state is not None:
+                    status.underbed_light_on = light_state
+                    _LOGGER.debug("Underbed light: %s", status.underbed_light_on)
 
                 return status
             finally:
@@ -521,6 +501,35 @@ class SleepNumberBed:
             _LOGGER.exception("Error setting preset")
             return False
 
+    async def _read_foundation_light(self, client: BleakClient) -> bool | None:
+        """Read underbed light state via foundation func=20 side=3.
+
+        Returns True if light is on, False if off, None if no response.
+        The auto-light feature turns this on when someone gets out of bed,
+        making it a presence proxy (light on = out of bed).
+        """
+        result = await self._send(
+            client,
+            _build_mcr(
+                MCR_CMD_FOUNDATION,
+                self._bed_addr,
+                MCR_STATUS_FOUNDATION,
+                MCR_FUNC_FOUNDATION_OUTLET_READ,
+                OUTLET_UNDERBED_LIGHT,
+            ),
+            timeout=3.0,
+        )
+        for data in result:
+            if (
+                len(data) >= 13
+                and data[0] == 0x16
+                and data[1] == 0x16
+                and (data[10] & 0x7F) == MCR_FUNC_FOUNDATION_OUTLET_READ
+                and (data[11] & 0x0F) >= 1
+            ):
+                return data[12] != 0
+        return None
+
     async def async_read_presence(self, device: BLEDevice) -> dict | None:
         """Lightweight presence-only read. Returns dict with presence + chamber data."""
         try:
@@ -578,6 +587,11 @@ class SleepNumberBed:
                 if chambers:
                     result_dict.update(chambers)
                     _LOGGER.debug("ChamberTypes (presence poll): %s", chambers)
+
+                # Read underbed light state (presence proxy when auto-light enabled)
+                light_on = await self._read_foundation_light(client)
+                if light_on is not None:
+                    result_dict["underbed_light_on"] = light_on
 
                 return result_dict
             finally:
