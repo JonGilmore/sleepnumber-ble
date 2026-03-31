@@ -162,6 +162,32 @@ def _parse_foundation_positions(notifications: list[bytes]) -> dict | None:
     return None
 
 
+def _parse_chamber_types(notifications: list[bytes]) -> dict | None:
+    """Parse func=97 (GetChamberTypes) response into a dict."""
+    for data in notifications:
+        if (
+            len(data) >= 12
+            and data[0] == 0x16
+            and data[1] == 0x16
+            and (data[10] & 0x7F) == MCR_FUNC_CHAMBER_TYPES
+        ):
+            plen = data[11] & 0x0F
+            payload = data[12 : 12 + plen]
+            result: dict = {}
+            if len(payload) >= 4:
+                result["right_chamber_present"] = payload[0]
+                result["right_chamber_type"] = payload[1]
+                result["left_chamber_present"] = payload[2]
+                result["left_chamber_type"] = payload[3]
+            if len(payload) >= 8:
+                result["right_occupancy"] = payload[4]
+                result["right_refresh_state"] = payload[5]
+                result["left_occupancy"] = payload[6]
+                result["left_refresh_state"] = payload[7]
+            return result if result else None
+    return None
+
+
 def _bed_address_from_mac(mac: str) -> int:
     """Derive MCR bed address from BLE MAC address (last 2 bytes)."""
     parts = mac.upper().replace("-", ":").split(":")
@@ -329,30 +355,11 @@ class SleepNumberBed:
                     ),
                     timeout=5.0,
                 )
-                for data in result:
-                    if (
-                        len(data) >= 12
-                        and data[0] == 0x16
-                        and data[1] == 0x16
-                        and (data[10] & 0x7F) == MCR_FUNC_CHAMBER_TYPES
-                    ):
-                        plen = data[11] & 0x0F
-                        payload = data[12 : 12 + plen]
-                        if len(payload) >= 4:
-                            status.right_chamber_present = payload[0]
-                            status.right_chamber_type = payload[1]
-                            status.left_chamber_present = payload[2]
-                            status.left_chamber_type = payload[3]
-                        if len(payload) >= 8:
-                            status.right_occupancy = payload[4]
-                            status.right_refresh_state = payload[5]
-                            status.left_occupancy = payload[6]
-                            status.left_refresh_state = payload[7]
-                        _LOGGER.debug(
-                            "ChamberTypes: payload=%s",
-                            list(payload),
-                        )
-                        break
+                chambers = _parse_chamber_types(result)
+                if chambers:
+                    for attr, val in chambers.items():
+                        setattr(status, attr, val)
+                    _LOGGER.debug("ChamberTypes: %s", chambers)
 
                 # Read foundation positions (func=5, cmd=0x42, status=0x42)
                 result = await self._send(
@@ -567,27 +574,10 @@ class SleepNumberBed:
                     ),
                     timeout=5.0,
                 )
-                for data in result:
-                    if (
-                        len(data) >= 12
-                        and data[0] == 0x16
-                        and data[1] == 0x16
-                        and (data[10] & 0x7F) == MCR_FUNC_CHAMBER_TYPES
-                    ):
-                        plen = data[11] & 0x0F
-                        payload = data[12 : 12 + plen]
-                        if len(payload) >= 4:
-                            result_dict["right_chamber_present"] = payload[0]
-                            result_dict["right_chamber_type"] = payload[1]
-                            result_dict["left_chamber_present"] = payload[2]
-                            result_dict["left_chamber_type"] = payload[3]
-                        if len(payload) >= 8:
-                            result_dict["right_occupancy"] = payload[4]
-                            result_dict["right_refresh_state"] = payload[5]
-                            result_dict["left_occupancy"] = payload[6]
-                            result_dict["left_refresh_state"] = payload[7]
-                        _LOGGER.debug("ChamberTypes (presence poll): %s", list(payload))
-                        break
+                chambers = _parse_chamber_types(result)
+                if chambers:
+                    result_dict.update(chambers)
+                    _LOGGER.debug("ChamberTypes (presence poll): %s", chambers)
 
                 return result_dict
             finally:

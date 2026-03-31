@@ -142,7 +142,7 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
 
             if changed:
                 _LOGGER.debug(
-                    "Presence poll changed: L_pres=%s R_pres=%s " "L_occ=%s R_occ=%s",
+                    "Presence poll changed: L_pres=%s R_pres=%s L_occ=%s R_occ=%s",
                     self.data.left_present,
                     self.data.right_present,
                     self.data.left_occupancy,
