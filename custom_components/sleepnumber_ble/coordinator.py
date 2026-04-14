@@ -8,7 +8,7 @@ from datetime import timedelta
 
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_interval, async_call_later
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
@@ -16,11 +16,8 @@ from .protocol import BedStatus, SleepNumberBed
 
 _LOGGER = logging.getLogger(__name__)
 
-# Full status poll (firmness, presence, positions)
+# Full status poll (firmness, positions, light)
 FULL_POLL_INTERVAL = timedelta(seconds=300)
-
-# Presence-only poll (lightweight, just func=24 per side)
-PRESENCE_POLL_INTERVAL = timedelta(seconds=20)
 
 # Fast poll after a set operation
 FAST_POLL_INTERVAL = 10
@@ -44,19 +41,6 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
         self._ble_lock = asyncio.Lock()
         self._fast_poll_remaining = 0
         self._fast_poll_cancel = None
-        self._presence_unsub = None
-
-    async def async_setup(self) -> None:
-        """Start presence polling."""
-        self._presence_unsub = async_track_time_interval(
-            self.hass, self._async_poll_presence, PRESENCE_POLL_INTERVAL
-        )
-
-    async def async_shutdown(self) -> None:
-        """Stop presence polling."""
-        if self._presence_unsub:
-            self._presence_unsub()
-            self._presence_unsub = None
 
     def _get_device(self):
         """Get the BLE device, trying connectable first."""
@@ -95,65 +79,6 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
             self._fast_poll_remaining = 0
         elif self._fast_poll_remaining > 0:
             self._schedule_fast_poll()
-
-    async def _async_poll_presence(self, _now=None) -> None:
-        """Lightweight presence-only poll on a fast interval."""
-        if self._ble_lock.locked():
-            _LOGGER.debug("Skipping presence poll, BLE busy")
-            return
-
-        async with self._ble_lock:
-            device = self._get_device()
-            if device is None:
-                return
-
-            result = await self.bed.async_read_presence(device)
-            if result is None:
-                return
-
-            if self.data is None:
-                return
-
-            changed = False
-
-            # func=24 presence (broken on 0.4.x, kept for diagnostics)
-            if self.data.left_present != result["left_present"]:
-                self.data.left_present = result["left_present"]
-                changed = True
-            if self.data.right_present != result["right_present"]:
-                self.data.right_present = result["right_present"]
-                changed = True
-
-            # Underbed light state (auto-light = presence proxy)
-            light_on = result.get("underbed_light_on")
-            if light_on is not None and self.data.underbed_light_on != light_on:
-                self.data.underbed_light_on = light_on
-                changed = True
-
-            # func=97 chamber types / occupancy
-            for attr in (
-                "left_chamber_present",
-                "right_chamber_present",
-                "left_chamber_type",
-                "right_chamber_type",
-                "left_occupancy",
-                "right_occupancy",
-                "left_refresh_state",
-                "right_refresh_state",
-            ):
-                new_val = result.get(attr)
-                if new_val is not None and getattr(self.data, attr) != new_val:
-                    setattr(self.data, attr, new_val)
-                    changed = True
-
-            if changed:
-                _LOGGER.debug(
-                    "Presence poll: light=%s L_pres=%s R_pres=%s",
-                    self.data.underbed_light_on,
-                    self.data.left_present,
-                    self.data.right_present,
-                )
-                self.async_set_updated_data(self.data)
 
     async def _async_update_data(self) -> BedStatus:
         """Full status fetch from the bed."""
