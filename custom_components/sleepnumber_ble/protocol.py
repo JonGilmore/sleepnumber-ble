@@ -169,6 +169,11 @@ class SleepNumberBed:
         """Return the MCR bed address."""
         return self._bed_addr
 
+    @property
+    def is_connected(self) -> bool:
+        """Return True if we have a live BLE connection."""
+        return self._client is not None and self._client.is_connected
+
     def _notification_handler(self, _sender: int, data: bytearray) -> None:
         """Handle BLE notifications."""
         _LOGGER.debug("Notification received: %s", bytes(data).hex(" "))
@@ -180,10 +185,17 @@ class SleepNumberBed:
         _LOGGER.debug("BLE connection lost to %s", self._address)
         self._client = None
 
-    async def _ensure_connected(self, device: BLEDevice) -> BleakClient:
-        """Return an existing connected client, or establish a new connection."""
+    async def _ensure_connected(self, device: BLEDevice | None) -> BleakClient:
+        """Return an existing connected client, or establish a new connection.
+
+        device can be None if we already have a connection (the scanner may not
+        see the bed while it's connected since it stops advertising).
+        """
         if self._client is not None and self._client.is_connected:
             return self._client
+
+        if device is None:
+            raise BleakError("No BLE device available to connect")
 
         _LOGGER.debug("Connecting to bed at %s", device.address)
         client = await establish_connection(
@@ -257,7 +269,7 @@ class SleepNumberBed:
 
     async def _send(
         self,
-        device: BLEDevice,
+        device: BLEDevice | None,
         data: bytes,
         timeout: float = 10.0,
     ) -> list[bytes]:
@@ -271,7 +283,9 @@ class SleepNumberBed:
             client = await self._ensure_connected(device)
             return await self._send_raw(client, data, timeout)
 
-    async def async_connect_and_read(self, device: BLEDevice) -> BedStatus | None:
+    async def async_connect_and_read(
+        self, device: BLEDevice | None
+    ) -> BedStatus | None:
         """Connect (if needed), read all status."""
         try:
             status = BedStatus()
@@ -364,7 +378,7 @@ class SleepNumberBed:
             _LOGGER.exception("Error communicating with bed at %s", self._address)
             return None
 
-    async def async_force_idle(self, device: BLEDevice) -> bool:
+    async def async_force_idle(self, device: BLEDevice | None) -> bool:
         """Send ForceIdle to stop any in-progress pump adjustment."""
         try:
             await self._send(
@@ -384,7 +398,7 @@ class SleepNumberBed:
             return False
 
     async def async_set_sleep_number(
-        self, device: BLEDevice, side: int, value: int
+        self, device: BLEDevice | None, side: int, value: int
     ) -> bool:
         """Set sleep number for one side. Sends ForceIdle first to stop any current adjustment."""
         value = max(5, min(100, value))
@@ -420,7 +434,7 @@ class SleepNumberBed:
             return False
 
     async def async_set_preset(
-        self, device: BLEDevice, preset: int, side: int | None = None
+        self, device: BLEDevice | None, preset: int, side: int | None = None
     ) -> bool:
         """Activate a foundation preset.
 
@@ -446,7 +460,9 @@ class SleepNumberBed:
             _LOGGER.exception("Error setting preset")
             return False
 
-    async def async_set_underbed_light(self, device: BLEDevice, on: bool) -> bool:
+    async def async_set_underbed_light(
+        self, device: BLEDevice | None, on: bool
+    ) -> bool:
         """Turn underbed light on or off."""
         try:
             mode = 1 if on else 0
@@ -468,7 +484,7 @@ class SleepNumberBed:
             return False
 
     async def async_set_foundation_position(
-        self, device: BLEDevice, side: int, head: int, foot: int
+        self, device: BLEDevice | None, side: int, head: int, foot: int
     ) -> bool:
         """Set foundation head and foot position for one side (0-100)."""
         head = max(0, min(100, head))
