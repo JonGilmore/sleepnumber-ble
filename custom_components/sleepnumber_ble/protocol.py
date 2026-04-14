@@ -7,19 +7,17 @@ import logging
 import struct
 from dataclasses import dataclass
 
-from bleak import BleakClient
+from bleak import BleakClient, BleakError
 from bleak.backends.device import BLEDevice
 from bleak_retry_connector import establish_connection
 
 from .const import (
     MCR_CMD_FOUNDATION,
     MCR_CMD_PUMP,
-    MCR_FUNC_CHAMBER_TYPES,
     MCR_FUNC_FORCE_IDLE,
     MCR_FUNC_FOUNDATION_OUTLET_READ,
     MCR_FUNC_INIT,
     MCR_FUNC_OUTLET,
-    MCR_FUNC_PRESENCE,
     MCR_FUNC_PRESET,
     MCR_FUNC_READ,
     MCR_FUNC_SET,
@@ -46,9 +44,6 @@ class BedStatus:
     right_sleep_number: int = 0
     left_pumping: bool = False
     right_pumping: bool = False
-    # Bed presence (occupancy) — func=24, broken on firmware 0.4.x
-    left_present: bool = False
-    right_present: bool = False
     # Underbed light
     underbed_light_on: bool | None = None
     # Foundation positions (0-100)
@@ -56,15 +51,6 @@ class BedStatus:
     right_foot_position: int = 0
     left_head_position: int = 0
     left_foot_position: int = 0
-    # Chamber types / occupancy (func=97) — diagnostic, may not have occupancy on 0.4.x
-    left_chamber_present: int | None = None
-    right_chamber_present: int | None = None
-    left_chamber_type: int | None = None
-    right_chamber_type: int | None = None
-    left_occupancy: int | None = None
-    right_occupancy: int | None = None
-    left_refresh_state: int | None = None
-    right_refresh_state: int | None = None
 
 
 def _mcr_crc(data: bytes) -> int:
@@ -161,32 +147,6 @@ def _parse_foundation_positions(notifications: list[bytes]) -> dict | None:
     return None
 
 
-def _parse_chamber_types(notifications: list[bytes]) -> dict | None:
-    """Parse func=97 (GetChamberTypes) response into a dict."""
-    for data in notifications:
-        if (
-            len(data) >= 12
-            and data[0] == 0x16
-            and data[1] == 0x16
-            and (data[10] & 0x7F) == MCR_FUNC_CHAMBER_TYPES
-        ):
-            plen = data[11] & 0x0F
-            payload = data[12 : 12 + plen]
-            result: dict = {}
-            if len(payload) >= 4:
-                result["right_chamber_present"] = payload[0]
-                result["right_chamber_type"] = payload[1]
-                result["left_chamber_present"] = payload[2]
-                result["left_chamber_type"] = payload[3]
-            if len(payload) >= 8:
-                result["right_occupancy"] = payload[4]
-                result["right_refresh_state"] = payload[5]
-                result["left_occupancy"] = payload[6]
-                result["left_refresh_state"] = payload[7]
-            return result if result else None
-    return None
-
-
 def _bed_address_from_mac(mac: str) -> int:
     """Derive MCR bed address from BLE MAC address (last 2 bytes)."""
     parts = mac.upper().replace("-", ":").split(":")
@@ -202,6 +162,7 @@ class SleepNumberBed:
         self._bed_addr = _bed_address_from_mac(address)
         self._notifications: list[bytes] = []
         self._notify_event: asyncio.Event = asyncio.Event()
+        self._client: BleakClient | None = None
 
     @property
     def bed_address(self) -> int:
@@ -214,10 +175,60 @@ class SleepNumberBed:
         self._notifications.append(bytes(data))
         self._notify_event.set()
 
-    async def _send(
+    def _on_disconnect(self, _client: BleakClient) -> None:
+        """Handle unexpected disconnection."""
+        _LOGGER.debug("BLE connection lost to %s", self._address)
+        self._client = None
+
+    async def _ensure_connected(self, device: BLEDevice) -> BleakClient:
+        """Return an existing connected client, or establish a new connection."""
+        if self._client is not None and self._client.is_connected:
+            return self._client
+
+        _LOGGER.debug("Connecting to bed at %s", device.address)
+        client = await establish_connection(
+            BleakClient,
+            device,
+            self._address,
+            max_attempts=3,
+            disconnected_callback=self._on_disconnect,
+        )
+        _LOGGER.debug("Connected, MTU=%s", client.mtu_size)
+
+        await client.start_notify(MCR_TX_UUID, self._notification_handler)
+
+        # Init handshake
+        self._notifications.clear()
+        self._notify_event.clear()
+        result = await self._send_raw(
+            client,
+            _build_mcr(
+                MCR_CMD_PUMP, 0x0000, MCR_STATUS_PUMP, MCR_FUNC_INIT, 0, b"\x00" * 8
+            ),
+            timeout=10.0,
+        )
+        if not result:
+            _LOGGER.warning("Init handshake failed")
+            await client.disconnect()
+            raise BleakError("Init handshake failed")
+
+        self._client = client
+        return client
+
+    async def async_disconnect(self) -> None:
+        """Disconnect from the bed."""
+        client = self._client
+        self._client = None
+        if client and client.is_connected:
+            try:
+                await client.disconnect()
+            except BleakError:
+                _LOGGER.debug("Error during disconnect", exc_info=True)
+
+    async def _send_raw(
         self, client: BleakClient, data: bytes, timeout: float = 10.0
     ) -> list[bytes]:
-        """Send data and wait for notification response."""
+        """Send data and wait for notification response (no reconnect logic)."""
         self._notifications.clear()
         self._notify_event.clear()
         _LOGGER.debug("Writing %d bytes: %s", len(data), data.hex(" "))
@@ -244,159 +255,111 @@ class SleepNumberBed:
 
         return list(self._notifications)
 
-    async def _init_handshake(self, client: BleakClient) -> bool:
-        """Send MCR init handshake."""
-        result = await self._send(
-            client,
-            _build_mcr(
-                MCR_CMD_PUMP, 0x0000, MCR_STATUS_PUMP, MCR_FUNC_INIT, 0, b"\x00" * 8
-            ),
-            timeout=10.0,
-        )
-        return len(result) > 0
-
-    async def _connect_and_init(self, device: BLEDevice) -> BleakClient | None:
-        """Connect, subscribe, and run init handshake. Caller must disconnect."""
-        client = await establish_connection(
-            BleakClient, device, self._address, max_attempts=3
-        )
-        _LOGGER.debug("Connected, MTU=%s", client.mtu_size)
-
-        await client.start_notify(MCR_TX_UUID, self._notification_handler)
-
-        if not await self._init_handshake(client):
-            _LOGGER.warning("Init handshake failed")
-            await client.disconnect()
-            return None
-
-        return client
+    async def _send(
+        self,
+        device: BLEDevice,
+        data: bytes,
+        timeout: float = 10.0,
+    ) -> list[bytes]:
+        """Send data with automatic connect and one retry on failure."""
+        client = await self._ensure_connected(device)
+        try:
+            return await self._send_raw(client, data, timeout)
+        except (BleakError, asyncio.TimeoutError):
+            _LOGGER.debug("Send failed, reconnecting", exc_info=True)
+            await self.async_disconnect()
+            client = await self._ensure_connected(device)
+            return await self._send_raw(client, data, timeout)
 
     async def async_connect_and_read(self, device: BLEDevice) -> BedStatus | None:
-        """Connect, read all status, disconnect."""
+        """Connect (if needed), read all status."""
         try:
-            _LOGGER.debug("Connecting to bed at %s", device.address)
-            client = await self._connect_and_init(device)
-            if client is None:
+            status = BedStatus()
+
+            # Read pump status (func=18)
+            result = await self._send(
+                device,
+                _build_mcr(
+                    MCR_CMD_PUMP,
+                    self._bed_addr,
+                    MCR_STATUS_PUMP,
+                    MCR_FUNC_READ,
+                    0x0F,
+                ),
+            )
+            pump = None
+            for data in result:
+                pump = _parse_pump_status(data)
+                if pump:
+                    break
+
+            if pump:
+                status.left_sleep_number = pump["left_sleep_number"]
+                status.right_sleep_number = pump["right_sleep_number"]
+                status.left_pumping = pump["left_pumping"]
+                status.right_pumping = pump["right_pumping"]
+                _LOGGER.debug(
+                    "Pump: L=%s R=%s",
+                    status.left_sleep_number,
+                    status.right_sleep_number,
+                )
+            else:
+                _LOGGER.warning("Failed to parse pump status")
                 return None
 
-            try:
-                status = BedStatus()
-
-                # Read pump status (func=18)
-                result = await self._send(
-                    client,
-                    _build_mcr(
-                        MCR_CMD_PUMP,
-                        self._bed_addr,
-                        MCR_STATUS_PUMP,
-                        MCR_FUNC_READ,
-                        0x0F,
-                    ),
+            # Read foundation positions (func=5, cmd=0x42, status=0x42)
+            result = await self._send(
+                device,
+                _build_mcr(
+                    MCR_CMD_FOUNDATION,
+                    self._bed_addr,
+                    MCR_STATUS_FOUNDATION,
+                    MCR_FUNC_FOUNDATION_POSITIONS,
+                    0x0F,
+                ),
+                timeout=5.0,
+            )
+            positions = _parse_foundation_positions(result)
+            if positions:
+                status.right_head_position = positions["right_head_position"]
+                status.right_foot_position = positions["right_foot_position"]
+                status.left_head_position = positions["left_head_position"]
+                status.left_foot_position = positions["left_foot_position"]
+                _LOGGER.debug(
+                    "Positions: LH=%s LF=%s RH=%s RF=%s",
+                    status.left_head_position,
+                    status.left_foot_position,
+                    status.right_head_position,
+                    status.right_foot_position,
                 )
-                pump = None
-                for data in result:
-                    pump = _parse_pump_status(data)
-                    if pump:
-                        break
+            else:
+                _LOGGER.debug("Foundation positions not available (may be flat)")
 
-                if pump:
-                    status.left_sleep_number = pump["left_sleep_number"]
-                    status.right_sleep_number = pump["right_sleep_number"]
-                    status.left_pumping = pump["left_pumping"]
-                    status.right_pumping = pump["right_pumping"]
-                    _LOGGER.debug(
-                        "Pump: L=%s R=%s",
-                        status.left_sleep_number,
-                        status.right_sleep_number,
-                    )
-                else:
-                    _LOGGER.warning("Failed to parse pump status")
-                    return None
-
-                # Read bed presence per side (func=24)
-                for side in [SIDE_LEFT, SIDE_RIGHT]:
-                    result = await self._send(
-                        client,
-                        _build_mcr(
-                            MCR_CMD_PUMP,
-                            self._bed_addr,
-                            MCR_STATUS_PUMP,
-                            MCR_FUNC_PRESENCE,
-                            side,
-                        ),
-                        timeout=5.0,
-                    )
-                    for data in result:
-                        if (
-                            len(data) >= 13
-                            and data[0] == 0x16
-                            and data[1] == 0x16
-                            and (data[10] & 0x7F) == MCR_FUNC_PRESENCE
-                            and (data[11] & 0x0F) >= 1
-                        ):
-                            present = data[12] != 0
-                            if side == SIDE_LEFT:
-                                status.left_present = present
-                            else:
-                                status.right_present = present
-                            break
-
-                # Read chamber types / occupancy (func=97)
-                result = await self._send(
-                    client,
-                    _build_mcr(
-                        MCR_CMD_PUMP,
-                        self._bed_addr,
-                        MCR_STATUS_PUMP,
-                        MCR_FUNC_CHAMBER_TYPES,
-                        2,  # side=2 per decompiled app
-                        b"\x00\x00",  # 2-byte payload per decompiled app
-                    ),
-                    timeout=5.0,
-                )
-                chambers = _parse_chamber_types(result)
-                if chambers:
-                    for attr, val in chambers.items():
-                        setattr(status, attr, val)
-                    _LOGGER.debug("ChamberTypes: %s", chambers)
-
-                # Read foundation positions (func=5, cmd=0x42, status=0x42)
-                result = await self._send(
-                    client,
-                    _build_mcr(
-                        MCR_CMD_FOUNDATION,
-                        self._bed_addr,
-                        MCR_STATUS_FOUNDATION,
-                        MCR_FUNC_FOUNDATION_POSITIONS,
-                        0x0F,
-                    ),
-                    timeout=5.0,
-                )
-                positions = _parse_foundation_positions(result)
-                if positions:
-                    status.right_head_position = positions["right_head_position"]
-                    status.right_foot_position = positions["right_foot_position"]
-                    status.left_head_position = positions["left_head_position"]
-                    status.left_foot_position = positions["left_foot_position"]
-                    _LOGGER.debug(
-                        "Positions: LH=%s LF=%s RH=%s RF=%s",
-                        status.left_head_position,
-                        status.left_foot_position,
-                        status.right_head_position,
-                        status.right_foot_position,
-                    )
-                else:
-                    _LOGGER.debug("Foundation positions not available (may be flat)")
-
-                # Read underbed light state via foundation (func=20, side=3)
-                light_state = await self._read_foundation_light(client)
-                if light_state is not None:
-                    status.underbed_light_on = light_state
+            # Read underbed light state via foundation (func=20, side=3)
+            result = await self._send(
+                device,
+                _build_mcr(
+                    MCR_CMD_FOUNDATION,
+                    self._bed_addr,
+                    MCR_STATUS_FOUNDATION,
+                    MCR_FUNC_FOUNDATION_OUTLET_READ,
+                    OUTLET_UNDERBED_LIGHT,
+                ),
+                timeout=3.0,
+            )
+            for data in result:
+                if (
+                    len(data) >= 13
+                    and data[0] == 0x16
+                    and data[1] == 0x16
+                    and (data[10] & 0x7F) == MCR_FUNC_FOUNDATION_OUTLET_READ
+                    and (data[11] & 0x0F) >= 1
+                ):
+                    status.underbed_light_on = data[12] != 0
                     _LOGGER.debug("Underbed light: %s", status.underbed_light_on)
+                    break
 
-                return status
-            finally:
-                await client.disconnect()
+            return status
         except Exception:  # pylint: disable=broad-except
             _LOGGER.exception("Error communicating with bed at %s", self._address)
             return None
@@ -404,24 +367,18 @@ class SleepNumberBed:
     async def async_force_idle(self, device: BLEDevice) -> bool:
         """Send ForceIdle to stop any in-progress pump adjustment."""
         try:
-            client = await self._connect_and_init(device)
-            if client is None:
-                return False
-            try:
-                await self._send(
-                    client,
-                    _build_mcr(
-                        MCR_CMD_PUMP,
-                        self._bed_addr,
-                        MCR_STATUS_PUMP,
-                        MCR_FUNC_FORCE_IDLE,
-                        0,
-                    ),
-                    timeout=3.0,
-                )
-                return True
-            finally:
-                await client.disconnect()
+            await self._send(
+                device,
+                _build_mcr(
+                    MCR_CMD_PUMP,
+                    self._bed_addr,
+                    MCR_STATUS_PUMP,
+                    MCR_FUNC_FORCE_IDLE,
+                    0,
+                ),
+                timeout=3.0,
+            )
+            return True
         except Exception:  # pylint: disable=broad-except
             _LOGGER.debug("Error sending force idle", exc_info=True)
             return False
@@ -432,38 +389,32 @@ class SleepNumberBed:
         """Set sleep number for one side. Sends ForceIdle first to stop any current adjustment."""
         value = max(5, min(100, value))
         try:
-            client = await self._connect_and_init(device)
-            if client is None:
-                return False
-            try:
-                # Stop any in-progress adjustment first
-                await self._send(
-                    client,
-                    _build_mcr(
-                        MCR_CMD_PUMP,
-                        self._bed_addr,
-                        MCR_STATUS_PUMP,
-                        MCR_FUNC_FORCE_IDLE,
-                        0,
-                    ),
-                    timeout=2.0,
-                )
+            # Stop any in-progress adjustment first
+            await self._send(
+                device,
+                _build_mcr(
+                    MCR_CMD_PUMP,
+                    self._bed_addr,
+                    MCR_STATUS_PUMP,
+                    MCR_FUNC_FORCE_IDLE,
+                    0,
+                ),
+                timeout=2.0,
+            )
 
-                await self._send(
-                    client,
-                    _build_mcr(
-                        MCR_CMD_PUMP,
-                        self._bed_addr,
-                        MCR_STATUS_PUMP,
-                        MCR_FUNC_SET,
-                        side,
-                        bytes([0x00, value]),
-                    ),
-                    timeout=5.0,
-                )
-                return True
-            finally:
-                await client.disconnect()
+            await self._send(
+                device,
+                _build_mcr(
+                    MCR_CMD_PUMP,
+                    self._bed_addr,
+                    MCR_STATUS_PUMP,
+                    MCR_FUNC_SET,
+                    side,
+                    bytes([0x00, value]),
+                ),
+                timeout=5.0,
+            )
+            return True
         except Exception:  # pylint: disable=broad-except
             _LOGGER.exception("Error setting sleep number")
             return False
@@ -477,152 +428,41 @@ class SleepNumberBed:
         """
         sides = [SIDE_LEFT, SIDE_RIGHT] if side is None else [side]
         try:
-            client = await self._connect_and_init(device)
-            if client is None:
-                return False
-            try:
-                for s in sides:
-                    await self._send(
-                        client,
-                        _build_mcr(
-                            MCR_CMD_FOUNDATION,
-                            self._bed_addr,
-                            MCR_STATUS_FOUNDATION,
-                            MCR_FUNC_PRESET,
-                            s,
-                            bytes([preset, 0x00]),
-                        ),
-                        timeout=3.0,
-                    )
-                return True
-            finally:
-                await client.disconnect()
-        except Exception:  # pylint: disable=broad-except
-            _LOGGER.exception("Error setting preset")
-            return False
-
-    async def _read_foundation_light(self, client: BleakClient) -> bool | None:
-        """Read underbed light state via foundation func=20 side=3.
-
-        Returns True if light is on, False if off, None if no response.
-        The auto-light feature turns this on when someone gets out of bed,
-        making it a presence proxy (light on = out of bed).
-        """
-        result = await self._send(
-            client,
-            _build_mcr(
-                MCR_CMD_FOUNDATION,
-                self._bed_addr,
-                MCR_STATUS_FOUNDATION,
-                MCR_FUNC_FOUNDATION_OUTLET_READ,
-                OUTLET_UNDERBED_LIGHT,
-            ),
-            timeout=3.0,
-        )
-        for data in result:
-            if (
-                len(data) >= 13
-                and data[0] == 0x16
-                and data[1] == 0x16
-                and (data[10] & 0x7F) == MCR_FUNC_FOUNDATION_OUTLET_READ
-                and (data[11] & 0x0F) >= 1
-            ):
-                return data[12] != 0
-        return None
-
-    async def async_read_presence(self, device: BLEDevice) -> dict | None:
-        """Lightweight presence-only read. Returns dict with presence + chamber data."""
-        try:
-            client = await self._connect_and_init(device)
-            if client is None:
-                return None
-            try:
-                result_dict: dict = {
-                    "left_present": False,
-                    "right_present": False,
-                }
-
-                # func=24 presence (broken on 0.4.x but keep reading)
-                for side in [SIDE_LEFT, SIDE_RIGHT]:
-                    result = await self._send(
-                        client,
-                        _build_mcr(
-                            MCR_CMD_PUMP,
-                            self._bed_addr,
-                            MCR_STATUS_PUMP,
-                            MCR_FUNC_PRESENCE,
-                            side,
-                        ),
-                        timeout=5.0,
-                    )
-                    for data in result:
-                        if (
-                            len(data) >= 13
-                            and data[0] == 0x16
-                            and data[1] == 0x16
-                            and (data[10] & 0x7F) == MCR_FUNC_PRESENCE
-                            and (data[11] & 0x0F) >= 1
-                        ):
-                            present = data[12] != 0
-                            key = (
-                                "left_present" if side == SIDE_LEFT else "right_present"
-                            )
-                            result_dict[key] = present
-                            break
-
-                # func=97 chamber types / occupancy
-                result = await self._send(
-                    client,
-                    _build_mcr(
-                        MCR_CMD_PUMP,
-                        self._bed_addr,
-                        MCR_STATUS_PUMP,
-                        MCR_FUNC_CHAMBER_TYPES,
-                        2,
-                        b"\x00\x00",
-                    ),
-                    timeout=5.0,
-                )
-                chambers = _parse_chamber_types(result)
-                if chambers:
-                    result_dict.update(chambers)
-                    _LOGGER.debug("ChamberTypes (presence poll): %s", chambers)
-
-                # Read underbed light state (presence proxy when auto-light enabled)
-                light_on = await self._read_foundation_light(client)
-                if light_on is not None:
-                    result_dict["underbed_light_on"] = light_on
-
-                return result_dict
-            finally:
-                await client.disconnect()
-        except Exception:  # pylint: disable=broad-except
-            _LOGGER.debug("Error reading presence", exc_info=True)
-            return None
-
-    async def async_set_underbed_light(self, device: BLEDevice, on: bool) -> bool:
-        """Turn underbed light on or off."""
-        try:
-            client = await self._connect_and_init(device)
-            if client is None:
-                return False
-            try:
-                mode = 1 if on else 0
+            for s in sides:
                 await self._send(
-                    client,
+                    device,
                     _build_mcr(
                         MCR_CMD_FOUNDATION,
                         self._bed_addr,
                         MCR_STATUS_FOUNDATION,
-                        MCR_FUNC_OUTLET,
-                        OUTLET_UNDERBED_LIGHT,
-                        bytes([mode, 0, 0]),
+                        MCR_FUNC_PRESET,
+                        s,
+                        bytes([preset, 0x00]),
                     ),
                     timeout=3.0,
                 )
-                return True
-            finally:
-                await client.disconnect()
+            return True
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception("Error setting preset")
+            return False
+
+    async def async_set_underbed_light(self, device: BLEDevice, on: bool) -> bool:
+        """Turn underbed light on or off."""
+        try:
+            mode = 1 if on else 0
+            await self._send(
+                device,
+                _build_mcr(
+                    MCR_CMD_FOUNDATION,
+                    self._bed_addr,
+                    MCR_STATUS_FOUNDATION,
+                    MCR_FUNC_OUTLET,
+                    OUTLET_UNDERBED_LIGHT,
+                    bytes([mode, 0, 0]),
+                ),
+                timeout=3.0,
+            )
+            return True
         except Exception:  # pylint: disable=broad-except
             _LOGGER.exception("Error setting underbed light")
             return False
@@ -634,25 +474,19 @@ class SleepNumberBed:
         head = max(0, min(100, head))
         foot = max(0, min(100, foot))
         try:
-            client = await self._connect_and_init(device)
-            if client is None:
-                return False
-            try:
-                await self._send(
-                    client,
-                    _build_mcr(
-                        MCR_CMD_FOUNDATION,
-                        self._bed_addr,
-                        MCR_STATUS_FOUNDATION,
-                        MCR_FUNC_SET,
-                        side,
-                        bytes([head, 0, foot, 0]),
-                    ),
-                    timeout=5.0,
-                )
-                return True
-            finally:
-                await client.disconnect()
+            await self._send(
+                device,
+                _build_mcr(
+                    MCR_CMD_FOUNDATION,
+                    self._bed_addr,
+                    MCR_STATUS_FOUNDATION,
+                    MCR_FUNC_SET,
+                    side,
+                    bytes([head, 0, foot, 0]),
+                ),
+                timeout=5.0,
+            )
+            return True
         except Exception:  # pylint: disable=broad-except
             _LOGGER.exception("Error setting foundation position")
             return False

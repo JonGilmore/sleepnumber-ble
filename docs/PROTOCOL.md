@@ -272,11 +272,100 @@ Tested with `cmd=0x02, sub=BED_ADDR, status=0x02`:
 | 5      | 11 bytes (zeros when flat)              | Foundation positions                       |
 | 17     | (empty ACK)                             | **SET position** (write, see safety note)  |
 | 19     | (empty ACK)                             | Foundation outlet control                  |
-| 20     | `[0, 0, 0]` (right only)                | Foot warming status (0s = not installed)   |
+| 20     | `[0, 0, 0]` per outlet side              | **Foundation outlet read** (see below)     |
 | 22     | (empty ACK)                             | Store preset                               |
 | 26     | `[67, 0, 0, 0, 0, 0, 0, 0]` (11 bytes)  | Massage status (zeros = off)               |
 
-### New Pump Functions from APK Decompilation (Not Yet Tested)
+### Foundation System Status (func=37) — Tested 2026-03-31
+
+```python
+frame = build_mcr(cmd=0x42, sub=BED_ADDR, status=0x42, func=37, side=0)
+```
+
+**Response payload (8 bytes):** `[1, 100, 100, 21, 20, 0, 0]` + continuation `0xc6`
+
+| Byte | Value | Field                     | Interpretation                          |
+| ---- | ----- | ------------------------- | --------------------------------------- |
+| 0    | 1     | configuration             | 1=SPLIT_HEAD (bed type)                 |
+| 1    | 100   | rightUnderBedLightIntensity | Right light intensity (0-100)          |
+| 2    | 100   | leftUnderBedLightIntensity  | Left light intensity (0-100)           |
+| 3    | 21    | feature flags (bit-packed) | See below                               |
+| 4    | 20    | boardHwRevision           | Lower nibble = revision code            |
+| 5    | 0     | (unused)                  | —                                       |
+| 6    | 0     | fault flags (bit-packed)  | See below                               |
+| 7    | 0xc6  | (continuation byte)       | Not parsed by app                       |
+
+**Byte 3 feature flags** (value 21 = 0x15 = 0b00010101):
+
+| Bit | Mask | Set? | Flag                   |
+| --- | ---- | ---- | ---------------------- |
+| 0   | 1    | Yes  | boardType = DUAL       |
+| 1   | 2    | No   | hasMassageAndLighting  |
+| 2   | 4    | Yes  | hasFootControl         |
+| 3   | 8    | No   | hasUnderBedLight       |
+| 4   | 16   | Yes  | hasFootWarming         |
+
+**Byte 6 fault flags** (value 0):
+
+| Bit | Mask | Flag                       |
+| --- | ---- | -------------------------- |
+| 2   | 4    | leftBoardUnderPerforming   |
+| 3   | 8    | rightBoardUnderPerforming  |
+
+**Note:** Only side=0 returns the full response. Side=1 and side=0x0F return empty.
+
+This is a **static configuration read** — describes bed hardware capabilities, not
+dynamic state. Useful for feature detection but not for state readback.
+
+### Foundation Outlet Read (func=20) — Tested 2026-03-31
+
+```python
+frame = build_mcr(cmd=0x42, sub=BED_ADDR, status=0x42, func=20, side=OUTLET_ID)
+```
+
+The "side" nibble selects which outlet to query:
+
+| Side | Response        | Interpretation                           |
+| ---- | --------------- | ---------------------------------------- |
+| 0    | (empty)         | Left outlet — no data                    |
+| 1    | `[0, 0, 0]`    | Right foot warming (0s = not active)     |
+| 2    | `[0, 0, 0]`    | Left foot warming (0s = not active)      |
+| 3    | `[on, brightness, 0]` | **Underbed light** (1=on, 0=off)  |
+| 4    | `[0, 0, 0]`    | Outlet 4 (unknown, zeros)                |
+| 0x0F | (empty)        | All — no data                            |
+
+**Side=3 is the underbed light.** `[1, 10, 0]` = light on at brightness 10.
+`[0, 0, 0]` = light off. This is the working replacement for the dead
+cmd=0x92 smart outlet read.
+
+### Pinch State (func=40) — Tested 2026-03-31
+
+```python
+frame = build_mcr(cmd=0x42, sub=BED_ADDR, status=0x42, func=40, side=SIDE)
+```
+
+**Response:** `[0, 0, 0, 0, 0]` for both sides. Anti-pinch safety sensor state.
+All zeros = no pinch detected. Returns same data for side=0 and side=1.
+
+### Node List (cmd=0x72, func=18) — Tested 2026-03-31
+
+```python
+frame = build_mcr(cmd=0x72, sub=BED_ADDR, status=0x72, func=18, side=0)
+```
+
+**Response:** `[0x71, 0x01, 0x51, 0x41]` — list of connected MCR node types:
+
+| Byte | Value | Node Type          |
+| ---- | ----- | ------------------ |
+| 0    | 0x71  | Device management  |
+| 1    | 0x01  | Pump               |
+| 2    | 0x51  | Unknown (0x51)     |
+| 3    | 0x41  | Foundation         |
+
+Confirms which subsystems are active. 0x92 (smart outlet) is notably absent,
+explaining why cmd=0x92 gets zero response on this firmware.
+
+### New Pump Functions from APK Decompilation
 
 | Func   | App Class Name          | Type    | Payload                  | Interpretation                             |
 | ------ | ----------------------- | ------- | ------------------------ | ------------------------------------------ |
@@ -321,13 +410,13 @@ not provide occupancy data on firmware 0.4.x.
 
 ### New Foundation Functions from APK Decompilation
 
-| Func   | App Class Name                 | Type     | Interpretation                                |
-| ------ | ------------------------------ | -------- | --------------------------------------------- |
-| **37** | GetFoundationSystemStatusCall  | **READ** | Foundation system status (side=0, no payload) |
-| **40** | GetPinchStateCall              | **READ** | Anti-pinch sensor state (per-side)            |
-| **42** | GetFootWarmingStatusCall       | **READ** | Foot warming temp/status (per-side)           |
-| 36     | (FoundationSystemSetting)      | WRITE    | Foundation system config                      |
-| 41     | SetFootWarmingStatusCall       | WRITE    | Set foot warming (per-side, 3-byte payload)   |
+| Func   | App Class Name                 | Type     | Status      | Interpretation                                |
+| ------ | ------------------------------ | -------- | ----------- | --------------------------------------------- |
+| **37** | GetFoundationSystemStatusCall  | **READ** | **Tested**  | Foundation system config (8 bytes, side=0)    |
+| **40** | GetPinchStateCall              | **READ** | **Tested**  | Anti-pinch sensor (5 bytes, all zeros)        |
+| **42** | GetFootWarmingStatusCall       | **READ** | Not tested  | Foot warming temp/status (per-side)           |
+| 36     | (FoundationSystemSetting)      | WRITE    | —           | Foundation system config                      |
+| 41     | SetFootWarmingStatusCall       | WRITE    | —           | Set foot warming (per-side, 3-byte payload)   |
 
 ### Sense & Do Functions (cmd=0x32, status=0x32)
 
@@ -348,10 +437,26 @@ misleading). It is a simple feature toggle — no sensor data.
 
 ### Device Management Functions (cmd=0x72, status=0x72)
 
-| Func   | App Class Name           | Type     | Interpretation                    |
-| ------ | ------------------------ | -------- | --------------------------------- |
-| **18** | GetNodeListCall          | **READ** | List connected MCR nodes          |
-| 17     | DoFoundationShortBindCall| WRITE    | Bind/pair foundation (1-byte payload) |
+| Func   | App Class Name           | Type     | Status     | Interpretation                        |
+| ------ | ------------------------ | -------- | ---------- | ------------------------------------- |
+| **18** | GetNodeListCall          | **READ** | **Tested** | Returns `[0x71, 0x01, 0x51, 0x41]`   |
+| 17     | DoFoundationShortBindCall| WRITE    | —          | Bind/pair foundation (1-byte payload) |
+
+Tested 2026-03-31: Only func=18 responds. Funcs 3, 5, 20, 24, 25, 26, 34, 37, 40
+all return no response. Same node list regardless of side (0, 1, 0x0F).
+
+### Mystery Node 0x51 — Tested 2026-03-31
+
+Node type 0x51 appears in the node list but has no corresponding code in the
+decompiled SleepIQ app. Probed with all known safe read function codes.
+
+**Result:** Responds to every func code with an ACK (response bit set, correct
+func echoed) but **always returns empty payloads**. This is a passive/stub node —
+hardware present on the MCR bus but no queryable data.
+
+| Func tested | Response |
+| ----------- | -------- |
+| 3, 5, 18, 20, 24, 25, 26, 34, 37, 40 | ACK with empty payload for all |
 
 ### Pump Empty ACK Functions (cmd=0x02)
 
@@ -501,13 +606,28 @@ notifications received. Polling is the only option.
   different addressing or cmd type)
 - **Massage control** — func=17 with cmd=0x42 and 12-byte payload (from decompiled code)
 - ~~Underbed lights~~ — **IMPLEMENTED:** cmd=0x92 func=19 for read, cmd=0x42 func=19 for write
-- **Foot warming** — func=42 read, func=41 write (cmd=0x42). Not tested.
+- **Foot warming** — func=42 read, func=41 write (cmd=0x42). Not tested
+  (Jon doesn't care about this).
+- **SenseElement Storage (cmd=0x52, func=29)** — firmware/config storage subsystem.
+  Key-based read/write with ASCII 4-byte identifiers: SWSC, SWST, SWCF, SREL,
+  SRFS, SFWU. These are firmware/software config blocks, not sensor data.
+  Not useful for presence or status readback.
 - **Responsive Air** — automatic pressure adjustment feature (Bamkey/FuzionBLE only,
   not available on MCR firmware 0.4.x)
-- **Foundation system status** — func=37 (cmd=0x42), read. Not tested.
-- **Pinch state** — func=40 (cmd=0x42), anti-pinch sensor. Not tested.
-- **Node list** — func=18 (cmd=0x72), lists connected MCR nodes. Not tested.
-- **Sense & Do** — func=18 (cmd=0x32), smart outlet toggle. Not useful for presence.
+- ~~Foundation system status~~ — **TESTED:** func=37, returns static bed config (8 bytes)
+- ~~Pinch state~~ — **TESTED:** func=40, returns all zeros (no pinch)
+- ~~Node list~~ — **TESTED:** cmd=0x72 func=18, returns `[0x71, 0x01, 0x51, 0x41]`.
+  Full func sweep on 0x72 — only func=18 responds.
+- ~~Mystery node 0x51~~ — **TESTED:** ACKs all funcs but returns empty payloads. Stub.
+- **Sense & Do (cmd=0x32)** — Zero response on firmware 0.4.x. Dead.
+- **Smart Outlet (cmd=0x92)** — Zero response on firmware 0.4.x. Dead.
+  Node list confirms 0x92 is not in the connected subsystems.
+- **Foundation outlet read (func=20)** — **TESTED:** side=3 returns underbed light
+  state `[on, brightness, 0]`. Replaces broken cmd=0x92 for light readback.
+- **Auto-light presence proxy** — When auto-light is enabled in SleepIQ app,
+  func=20 side=3 flips `[1, 10, 0]` / `[0, 0, 0]` with occupancy changes.
+  3/3 correlation confirmed. However, manual light toggles produce false reads,
+  making it unreliable as a standalone presence sensor.
 
 ---
 
