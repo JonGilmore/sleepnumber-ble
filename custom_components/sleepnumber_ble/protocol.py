@@ -113,18 +113,19 @@ def _parse_foundation_status(notifications: list[bytes]) -> dict | None:
     """Parse foundation status from cmd=0x42 func=18 response.
 
     Response is 15 bytes split across notifications (MTU=23 only fits ~10 payload
-    bytes per frame). Layout reverse-engineered from an Android BT HCI capture:
+    bytes per frame). Layout reverse-engineered from Android BT HCI captures
+    correlating known preset/SET commands with byte changes:
 
-        byte 0:  status flags — bit 0 = 1 while any actuator is moving
-        byte 2:  head position (verified for the side currently being moved)
-        byte 4:  position (hypothesized: foot)
-        byte 6:  position (hypothesized: other-side head)
-        byte 8:  position (hypothesized: other-side foot)
-        byte 10: redundant moving flag (1 = moving, 0 = settled)
-        byte 14: appears to be a max/target value (0x44 idle, 0x64=100 once active)
+        byte 0:  status — 0x42 idle, 0x43 moving (bit 0 = motion in progress)
+        byte 1:  head position for side=0 (SIDE_LEFT in our convention)
+        byte 2:  head position for side=1 (SIDE_RIGHT)
+        byte 3:  foot position
+        byte 4:  foot position (mirrors byte 3; feet are a single shared actuator)
+        bytes 10-13: per-actuator movement flags (1 = moving) — redundant with byte 0
+        byte 14: last activated preset code (e.g. 0x04 flat, 0x05 zero-G, 0x06 snore)
 
-    The byte 2/4/6/8 → side+actuator mapping is a hypothesis from a single capture
-    (snore on side=1 only moved byte 2). Verify with diverse captures.
+    Verified by correlating the wire activity with the user's described actions
+    on each side (e.g. "left → flat" sent with side=1 dropped only byte 2).
     """
     payload = b""
     found = False
@@ -144,16 +145,17 @@ def _parse_foundation_status(notifications: list[bytes]) -> dict | None:
                 break
             payload += data
 
-    if not found or len(payload) < 11:
+    if not found or len(payload) < 5:
         return None
 
-    moving = bool(payload[0] & 0x01) or (len(payload) > 10 and payload[10] != 0)
+    moving = bool(payload[0] & 0x01)
     return {
         "foundation_moving": moving,
+        "left_head_position": payload[1],
         "right_head_position": payload[2],
-        "right_foot_position": payload[4],
-        "left_head_position": payload[6],
-        "left_foot_position": payload[8],
+        # feet are a single shared actuator; bytes 3 and 4 mirror each other
+        "left_foot_position": payload[3],
+        "right_foot_position": payload[3],
     }
 
 

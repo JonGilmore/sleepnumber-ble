@@ -308,38 +308,61 @@ positions. It replaces our previous (broken) func=5 position read.
 
 **Response payload (15 bytes):**
 
-| Byte  | Field             | Interpretation                                       |
-| ----- | ----------------- | ---------------------------------------------------- |
-| **0** | status flags      | `0x42` idle, `0x43` while any actuator moves (bit 0 = moving) |
-| 1     | (pad)             | Always 0                                             |
-| **2** | head position A   | 0–100. Right head (changed during snore on side=1)   |
-| 3     | (pad)             | Always 0                                             |
-| 4     | foot position A?  | 0–100, untested                                      |
-| 5     | (pad)             | Always 0                                             |
-| 6     | head position B?  | 0–100, untested                                      |
-| 7     | (pad)             | Always 0                                             |
-| 8     | foot position B?  | 0–100, untested                                      |
-| 9     | (pad)             | Always 0                                             |
-| **10**| moving flag       | `1` while a move is in progress, `0` when settled    |
-| 11–13 | (unknown)         | Stayed 0 in capture                                  |
-| 14    | (unknown)         | `0x44` initially, `0x64` (= 100) after first activity — possibly target/last-commanded value |
+| Byte  | Field                | Interpretation                                       |
+| ----- | -------------------- | ---------------------------------------------------- |
+| **0** | status flags         | `0x42` idle, `0x43` while any actuator moves (bit 0 = motion in progress) |
+| **1** | head position side=0 | 0–100. Head for side=0 (SIDE_LEFT in our convention) |
+| **2** | head position side=1 | 0–100. Head for side=1 (SIDE_RIGHT)                  |
+| **3** | foot position        | 0–100. Shared foot actuator                          |
+| **4** | foot position (dup)  | Mirrors byte 3. May briefly differ during fast motion |
+| 5–9   | (unused)             | Stay 0                                               |
+| 10–13 | per-actuator motion  | Set to 1 while specific actuators are moving (redundant with byte 0) |
+| **14**| last preset code     | Echoes the most recently activated preset value (`0x04`=flat, `0x05`=zero-G, `0x06`=snore) |
 
-**Movement tracking from live snore capture (side=1, raises right head):**
+**Verification — captured the user driving each side through flat / 0G / head up
+/ foot up sequences:**
+
+After preset 5 (Zero-G) on side=0, settled state:
 
 ```
-idle:   42 00 00 00 00 00 00 00 00 00 00 00 00 00 44
-moving: 43 00 03 00 00 00 00 00 00 00 01 00 00 00 64
-moving: 43 00 09 00 00 00 00 00 00 00 01 00 00 00 64
-moving: 43 00 0f 00 00 00 00 00 00 00 01 00 00 00 64
-done:   42 00 10 00 00 00 00 00 00 00 00 00 00 00 64
+42 2e 2e 4c 4c 00 00 00 00 00 00 00 00 00 55
+   └─┬─┘└─┬─┘└─┬─┘└─┬─┘                    └─byte 14
+   side=0 side=1 foot foot
+   head    head        (dup)
 ```
 
-**Confirmed**: byte 0 bit 0 and byte 10 both indicate motion. Byte 2 is a head
-position (right head in this capture, since snore was sent to side=1).
+After preset 4 (Flat) on side=0, settled (byte 1 dropped, byte 2 unchanged):
 
-**Hypothesis (untested)**: bytes 2, 4, 6, 8 are right-head, right-foot, left-head,
-left-foot positions. Needs a Zero-G or per-side position-set capture to confirm
-the order. Use cautiously and verify byte mapping with future captures.
+```
+42 00 2e 00 00 00 00 00 00 00 00 00 00 00 04
+   └─┬─┘└─┬─┘└─┬─┘└─┬─┘                   └─byte 14 = preset 4
+   side=0 side=1 foot foot
+   went   stayed
+   to 0   at 46
+```
+
+This conclusively maps **byte 1 to side=0's head and byte 2 to side=1's head**.
+Bytes 3 and 4 always tracked together for foot moves.
+
+### SET Position (func=17) — Wire Format Correction
+
+The Android app uses a **12-byte payload**, not 4 bytes:
+
+```
+SET head=100 side=0:  64 00 ff ff ff ff ff ff ff ff ff ff
+SET foot=100 side=0:  ff ff 64 00 ff ff ff ff ff ff ff ff
+```
+
+| Bytes | Field    |
+| ----- | -------- |
+| 0–1   | head value (low byte first), `ff ff` = "do not change" |
+| 2–3   | foot value, `ff ff` = "do not change"                  |
+| 4–11  | additional axes, also `ff ff` masked when not changing |
+
+`0xff` is a "leave alone" sentinel for axes that should not move. Our current
+implementation sends a 4-byte `[head, 0, foot, 0]` payload which is the truncated
+version of the same format and appears to work, but the 12-byte form with masks
+is the official format and lets you change one axis without disturbing the other.
 
 ### Foundation System Status (func=37) — Tested 2026-03-31
 
