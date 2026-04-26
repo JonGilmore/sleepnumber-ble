@@ -33,7 +33,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-MCR_FUNC_FOUNDATION_POSITIONS = 5
+MCR_FUNC_FOUNDATION_STATUS = 18  # cmd=0x42: live foundation status (15-byte payload)
 
 
 @dataclass
@@ -46,11 +46,15 @@ class BedStatus:
     right_pumping: bool = False
     # Underbed light
     underbed_light_on: bool | None = None
-    # Foundation positions (0-100)
+    # Foundation positions (0-100). Read via cmd=0x42 func=18 byte indices 2/4/6/8.
+    # Side mapping (rH/rF/lH/lF) is a best-guess hypothesis from a single Android
+    # BT HCI capture and may be wrong — verify with diverse position captures.
     right_head_position: int = 0
     right_foot_position: int = 0
     left_head_position: int = 0
     left_foot_position: int = 0
+    # True while any foundation actuator is in motion (preset, position set).
+    foundation_moving: bool = False
 
 
 def _mcr_crc(data: bytes) -> int:
@@ -105,46 +109,53 @@ def _parse_pump_status(data: bytes) -> dict | None:
     }
 
 
-def _parse_foundation_positions(notifications: list[bytes]) -> dict | None:
-    """Parse foundation position data from func=5 response.
+def _parse_foundation_status(notifications: list[bytes]) -> dict | None:
+    """Parse foundation status from cmd=0x42 func=18 response.
 
-    The response is 11 bytes split across notifications (due to MTU=23).
-    Format from decompiled: [rH, rH_?, rF, rF_?, lH, lH_?, lF, lF_?, ?, ?, ?]
-    where positions are 0-100.
+    Response is 15 bytes split across notifications (MTU=23 only fits ~10 payload
+    bytes per frame). Layout reverse-engineered from an Android BT HCI capture:
+
+        byte 0:  status flags — bit 0 = 1 while any actuator is moving
+        byte 2:  head position (verified for the side currently being moved)
+        byte 4:  position (hypothesized: foot)
+        byte 6:  position (hypothesized: other-side head)
+        byte 8:  position (hypothesized: other-side foot)
+        byte 10: redundant moving flag (1 = moving, 0 = settled)
+        byte 14: appears to be a max/target value (0x44 idle, 0x64=100 once active)
+
+    The byte 2/4/6/8 → side+actuator mapping is a hypothesis from a single capture
+    (snore on side=1 only moved byte 2). Verify with diverse captures.
     """
-    # Reassemble: find the MCR frame, extract payload
+    payload = b""
+    found = False
     for data in notifications:
-        if len(data) < 12 or data[0] != 0x16 or data[1] != 0x16:
-            continue
-        hdr = data[2:]
-        func = hdr[8] & 0x7F
-        plen = hdr[9] & 0x0F
-        if func == MCR_FUNC_FOUNDATION_POSITIONS and plen > 0:
-            # Payload might span into next notification
-            payload = hdr[10 : 10 + plen]
-            # Get remaining bytes from subsequent notifications if needed
-            remaining = plen - len(payload)
-            if remaining > 0:
-                for extra in notifications:
-                    if extra[0] != 0x16:  # continuation fragment
-                        payload += extra[:remaining]
-                        break
+        if not found:
+            if len(data) < 12 or data[0] != 0x16 or data[1] != 0x16:
+                continue
+            hdr = data[2:]
+            func = hdr[8] & 0x7F
+            plen = hdr[9] & 0x0F
+            if func != MCR_FUNC_FOUNDATION_STATUS:
+                continue
+            payload = hdr[10:]
+            found = True
+        else:
+            # Continuation fragments do not start with sync bytes
+            if len(data) >= 2 and data[0] == 0x16 and data[1] == 0x16:
+                break
+            payload += data
 
-            if len(payload) >= 8:
-                return {
-                    "right_head_position": payload[0],
-                    "right_foot_position": payload[2],
-                    "left_head_position": payload[4],
-                    "left_foot_position": payload[6],
-                }
-            elif len(payload) >= 4:
-                return {
-                    "right_head_position": payload[0],
-                    "right_foot_position": payload[1],
-                    "left_head_position": payload[2],
-                    "left_foot_position": payload[3],
-                }
-    return None
+    if not found or len(payload) < 11:
+        return None
+
+    moving = bool(payload[0] & 0x01) or (len(payload) > 10 and payload[10] != 0)
+    return {
+        "foundation_moving": moving,
+        "right_head_position": payload[2],
+        "right_foot_position": payload[4],
+        "left_head_position": payload[6],
+        "left_foot_position": payload[8],
+    }
 
 
 def _bed_address_from_mac(mac: str) -> int:
@@ -321,33 +332,35 @@ class SleepNumberBed:
                 _LOGGER.warning("Failed to parse pump status")
                 return None
 
-            # Read foundation positions (func=5, cmd=0x42, status=0x42)
+            # Read foundation status (cmd=0x42 func=18) — gives positions + movement flag
             result = await self._send(
                 device,
                 _build_mcr(
                     MCR_CMD_FOUNDATION,
                     self._bed_addr,
                     MCR_STATUS_FOUNDATION,
-                    MCR_FUNC_FOUNDATION_POSITIONS,
-                    0x0F,
+                    MCR_FUNC_FOUNDATION_STATUS,
+                    0,
                 ),
                 timeout=5.0,
             )
-            positions = _parse_foundation_positions(result)
-            if positions:
-                status.right_head_position = positions["right_head_position"]
-                status.right_foot_position = positions["right_foot_position"]
-                status.left_head_position = positions["left_head_position"]
-                status.left_foot_position = positions["left_foot_position"]
+            foundation = _parse_foundation_status(result)
+            if foundation:
+                status.foundation_moving = foundation["foundation_moving"]
+                status.right_head_position = foundation["right_head_position"]
+                status.right_foot_position = foundation["right_foot_position"]
+                status.left_head_position = foundation["left_head_position"]
+                status.left_foot_position = foundation["left_foot_position"]
                 _LOGGER.debug(
-                    "Positions: LH=%s LF=%s RH=%s RF=%s",
+                    "Foundation: moving=%s LH=%s LF=%s RH=%s RF=%s",
+                    status.foundation_moving,
                     status.left_head_position,
                     status.left_foot_position,
                     status.right_head_position,
                     status.right_foot_position,
                 )
             else:
-                _LOGGER.debug("Foundation positions not available (may be flat)")
+                _LOGGER.debug("Foundation status unavailable")
 
             # Read underbed light state via foundation (func=20, side=3)
             result = await self._send(

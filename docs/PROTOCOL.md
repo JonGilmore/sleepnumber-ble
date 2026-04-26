@@ -135,10 +135,15 @@ Example: MAC `64:DB:A0:07:DD:02` → MCR address `0xDD02`
 ### Request
 
 ```
-cmd=0x02, target=0x0000, sub=0x0000, status=0x02, func=0, payload=8 zero bytes
+cmd=0x02, target=0x0000, sub=0x0000, status=0x02, func=0, payload=8 bytes
 ```
 
-**Hex:** `16 16 02 00 00 00 00 02 00 00 00 08 00 00 00 00 00 00 00 00 00 86`
+The 8-byte payload accepts all-zero bytes. The official Android app sends a session
+token whose last 2 bytes are the bed's MCR address (e.g. `4b a4 39 99 9d f9 f6 3d`
+for bed `0xf63d`); the first 6 bytes appear to be an opaque token. Both forms are
+accepted on firmware 0.4.x.
+
+**Hex (zero payload, our impl):** `16 16 02 00 00 00 00 02 00 00 00 08 00 00 00 00 00 00 00 00 00 86`
 
 ### Response
 
@@ -146,7 +151,22 @@ cmd=0x02, target=0x0000, sub=0x0000, status=0x02, func=0, payload=8 zero bytes
 cmd=0x01, target=BED_ADDR, echo=BED_ADDR, func=0|0x80 (response bit set)
 ```
 
-The response contains the bed's MCR address in the target and echo fields.
+The response payload echoes the request payload + 2 bytes of the bed's MCR address.
+
+### Address Field Conventions (Tested 2026-04-26)
+
+The Android app and our implementation use different but both-accepted addressing
+conventions on firmware 0.4.x:
+
+| Field      | Android app        | Our implementation |
+| ---------- | ------------------ | ------------------ |
+| target     | BED_ADDR           | 0x0000             |
+| sub        | CLIENT_ID (0xdd02) | BED_ADDR           |
+| echo       | BED_ADDR           | 0x0000             |
+
+The bed echoes whatever was sent and routes responses correctly in both cases. The
+app's convention places the bed in `target` and the client source ID in `sub`; ours
+flips that. No functional difference observed for this firmware.
 
 ---
 
@@ -266,15 +286,60 @@ Tested with `cmd=0x02, sub=BED_ADDR, status=0x02`:
 
 | Func   | Response Payload                        | Interpretation                             |
 | ------ | --------------------------------------- | ------------------------------------------ |
-| **18** | `[67, 100, 100, 76, 76, 0, 0, 0]` (15b) | **Foundation Status** (positions/features) |
+| **18** | 15 bytes — see below                    | **Foundation Status** — movement + positions |
 | **21** | (empty ACK)                             | **Activate Preset** (write command)        |
 | 3      | `[254]` (left), `[255]` (right)         | Device capability flags                    |
-| 5      | 11 bytes (zeros when flat)              | Foundation positions                       |
+| 5      | 11 bytes (always zeros on 0.4.x)        | Foundation positions — **DEAD, use func=18** |
 | 17     | (empty ACK)                             | **SET position** (write, see safety note)  |
 | 19     | (empty ACK)                             | Foundation outlet control                  |
 | 20     | `[0, 0, 0]` per outlet side              | **Foundation outlet read** (see below)     |
 | 22     | (empty ACK)                             | Store preset                               |
 | 26     | `[67, 0, 0, 0, 0, 0, 0, 0]` (11 bytes)  | Massage status (zeros = off)               |
+
+### Foundation Status (func=18) — Tested 2026-04-26
+
+```python
+frame = build_mcr(cmd=0x42, sub=BED_ADDR, status=0x42, func=18, side=0)
+```
+
+**This is the Android app's primary foundation readout** — the app polls this
+during foundation moves to track progress and after settling to read final
+positions. It replaces our previous (broken) func=5 position read.
+
+**Response payload (15 bytes):**
+
+| Byte  | Field             | Interpretation                                       |
+| ----- | ----------------- | ---------------------------------------------------- |
+| **0** | status flags      | `0x42` idle, `0x43` while any actuator moves (bit 0 = moving) |
+| 1     | (pad)             | Always 0                                             |
+| **2** | head position A   | 0–100. Right head (changed during snore on side=1)   |
+| 3     | (pad)             | Always 0                                             |
+| 4     | foot position A?  | 0–100, untested                                      |
+| 5     | (pad)             | Always 0                                             |
+| 6     | head position B?  | 0–100, untested                                      |
+| 7     | (pad)             | Always 0                                             |
+| 8     | foot position B?  | 0–100, untested                                      |
+| 9     | (pad)             | Always 0                                             |
+| **10**| moving flag       | `1` while a move is in progress, `0` when settled    |
+| 11–13 | (unknown)         | Stayed 0 in capture                                  |
+| 14    | (unknown)         | `0x44` initially, `0x64` (= 100) after first activity — possibly target/last-commanded value |
+
+**Movement tracking from live snore capture (side=1, raises right head):**
+
+```
+idle:   42 00 00 00 00 00 00 00 00 00 00 00 00 00 44
+moving: 43 00 03 00 00 00 00 00 00 00 01 00 00 00 64
+moving: 43 00 09 00 00 00 00 00 00 00 01 00 00 00 64
+moving: 43 00 0f 00 00 00 00 00 00 00 01 00 00 00 64
+done:   42 00 10 00 00 00 00 00 00 00 00 00 00 00 64
+```
+
+**Confirmed**: byte 0 bit 0 and byte 10 both indicate motion. Byte 2 is a head
+position (right head in this capture, since snore was sent to side=1).
+
+**Hypothesis (untested)**: bytes 2, 4, 6, 8 are right-head, right-foot, left-head,
+left-foot positions. Needs a Zero-G or per-side position-set capture to confirm
+the order. Use cautiously and verify byte mapping with future captures.
 
 ### Foundation System Status (func=37) — Tested 2026-03-31
 
@@ -593,17 +658,29 @@ Evidence from APK analysis:
 A 2+ minute passive listening test with someone in the bed confirmed: zero unsolicited
 notifications received. Polling is the only option.
 
+**Reconfirmed via Android BT HCI capture (2026-04-26):** A ~140s capture of the
+official SleepIQ app spanning multiple bed transitions (get-in/get-out, snore
+preset, light toggles, sleep number adjust) shows the app calls `func=97`
+**exactly once** at session startup — response is only 4 bytes (chamber types,
+no occupancy bytes 4-7). Functions 24, 25, and 97 are never polled during bed
+transitions. The app sources presence from the cloud `/bed/familyStatus`
+endpoint, not BLE.
+
 ---
 
 ## Unexplored / Partially Explored Areas
 
 - **Bed presence/occupancy** — **NOT AVAILABLE over BLE on firmware 0.4.x.**
   func=24/25 always return 0. func=97 returns chamber type only (4 bytes),
-  not the full 8-byte response with occupancy fields. The app falls back to
-  the cloud REST API (`/bed/familyStatus`) for presence on this firmware.
+  not the full 8-byte response with occupancy fields. Confirmed by Android BT
+  HCI capture: the official app does not poll presence over BLE on this firmware
+  and falls back to the cloud REST API (`/bed/familyStatus`).
 - ~~Push notifications~~ — **NOT SUPPORTED:** bed is purely request/response
-- **Foundation position readback** — func=5 returns 11 bytes but always zeros (may need
-  different addressing or cmd type)
+- ~~Foundation position readback~~ — **TESTED 2026-04-26:** func=5 always returns
+  zeros, but **func=18 (cmd=0x42) returns live foundation status** including
+  movement flag (byte 0 bit 0) and at least one head position (byte 2). See
+  "Foundation Status (func=18)" section. Used by the official app for movement
+  tracking during preset moves.
 - **Massage control** — func=17 with cmd=0x42 and 12-byte payload (from decompiled code)
 - ~~Underbed lights~~ — **IMPLEMENTED:** cmd=0x92 func=19 for read, cmd=0x42 func=19 for write
 - **Foot warming** — func=42 read, func=41 write (cmd=0x42). Not tested
