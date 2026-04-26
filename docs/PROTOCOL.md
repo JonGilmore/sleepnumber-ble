@@ -135,10 +135,15 @@ Example: MAC `64:DB:A0:07:DD:02` → MCR address `0xDD02`
 ### Request
 
 ```
-cmd=0x02, target=0x0000, sub=0x0000, status=0x02, func=0, payload=8 zero bytes
+cmd=0x02, target=0x0000, sub=0x0000, status=0x02, func=0, payload=8 bytes
 ```
 
-**Hex:** `16 16 02 00 00 00 00 02 00 00 00 08 00 00 00 00 00 00 00 00 00 86`
+The 8-byte payload accepts all-zero bytes. The official Android app sends a session
+token whose last 2 bytes are the bed's MCR address (e.g. `4b a4 39 99 9d f9 f6 3d`
+for bed `0xf63d`); the first 6 bytes appear to be an opaque token. Both forms are
+accepted on firmware 0.4.x.
+
+**Hex (zero payload, our impl):** `16 16 02 00 00 00 00 02 00 00 00 08 00 00 00 00 00 00 00 00 00 86`
 
 ### Response
 
@@ -146,7 +151,22 @@ cmd=0x02, target=0x0000, sub=0x0000, status=0x02, func=0, payload=8 zero bytes
 cmd=0x01, target=BED_ADDR, echo=BED_ADDR, func=0|0x80 (response bit set)
 ```
 
-The response contains the bed's MCR address in the target and echo fields.
+The response payload echoes the request payload + 2 bytes of the bed's MCR address.
+
+### Address Field Conventions (Tested 2026-04-26)
+
+The Android app and our implementation use different but both-accepted addressing
+conventions on firmware 0.4.x:
+
+| Field      | Android app        | Our implementation |
+| ---------- | ------------------ | ------------------ |
+| target     | BED_ADDR           | 0x0000             |
+| sub        | CLIENT_ID (0xdd02) | BED_ADDR           |
+| echo       | BED_ADDR           | 0x0000             |
+
+The bed echoes whatever was sent and routes responses correctly in both cases. The
+app's convention places the bed in `target` and the client source ID in `sub`; ours
+flips that. No functional difference observed for this firmware.
 
 ---
 
@@ -266,15 +286,83 @@ Tested with `cmd=0x02, sub=BED_ADDR, status=0x02`:
 
 | Func   | Response Payload                        | Interpretation                             |
 | ------ | --------------------------------------- | ------------------------------------------ |
-| **18** | `[67, 100, 100, 76, 76, 0, 0, 0]` (15b) | **Foundation Status** (positions/features) |
+| **18** | 15 bytes — see below                    | **Foundation Status** — movement + positions |
 | **21** | (empty ACK)                             | **Activate Preset** (write command)        |
 | 3      | `[254]` (left), `[255]` (right)         | Device capability flags                    |
-| 5      | 11 bytes (zeros when flat)              | Foundation positions                       |
+| 5      | 11 bytes (always zeros on 0.4.x)        | Foundation positions — **DEAD, use func=18** |
 | 17     | (empty ACK)                             | **SET position** (write, see safety note)  |
 | 19     | (empty ACK)                             | Foundation outlet control                  |
 | 20     | `[0, 0, 0]` per outlet side              | **Foundation outlet read** (see below)     |
 | 22     | (empty ACK)                             | Store preset                               |
 | 26     | `[67, 0, 0, 0, 0, 0, 0, 0]` (11 bytes)  | Massage status (zeros = off)               |
+
+### Foundation Status (func=18) — Tested 2026-04-26
+
+```python
+frame = build_mcr(cmd=0x42, sub=BED_ADDR, status=0x42, func=18, side=0)
+```
+
+**This is the Android app's primary foundation readout** — the app polls this
+during foundation moves to track progress and after settling to read final
+positions. It replaces our previous (broken) func=5 position read.
+
+**Response payload (15 bytes):**
+
+| Byte  | Field                | Interpretation                                       |
+| ----- | -------------------- | ---------------------------------------------------- |
+| **0** | status flags         | `0x42` idle, `0x43` while any actuator moves (bit 0 = motion in progress) |
+| **1** | head position side=0 | 0–100. Head for side=0 (SIDE_LEFT in our convention) |
+| **2** | head position side=1 | 0–100. Head for side=1 (SIDE_RIGHT)                  |
+| **3** | foot position        | 0–100. Shared foot actuator                          |
+| **4** | foot position (dup)  | Mirrors byte 3. May briefly differ during fast motion |
+| 5–9   | (unused)             | Stay 0                                               |
+| 10–13 | per-actuator motion  | Set to 1 while specific actuators are moving (redundant with byte 0) |
+| **14**| last preset code     | Echoes the most recently activated preset value (`0x04`=flat, `0x05`=zero-G, `0x06`=snore) |
+
+**Verification — captured the user driving each side through flat / 0G / head up
+/ foot up sequences:**
+
+After preset 5 (Zero-G) on side=0, settled state:
+
+```
+42 2e 2e 4c 4c 00 00 00 00 00 00 00 00 00 55
+   └─┬─┘└─┬─┘└─┬─┘└─┬─┘                    └─byte 14
+   side=0 side=1 foot foot
+   head    head        (dup)
+```
+
+After preset 4 (Flat) on side=0, settled (byte 1 dropped, byte 2 unchanged):
+
+```
+42 00 2e 00 00 00 00 00 00 00 00 00 00 00 04
+   └─┬─┘└─┬─┘└─┬─┘└─┬─┘                   └─byte 14 = preset 4
+   side=0 side=1 foot foot
+   went   stayed
+   to 0   at 46
+```
+
+This conclusively maps **byte 1 to side=0's head and byte 2 to side=1's head**.
+Bytes 3 and 4 always tracked together for foot moves.
+
+### SET Position (func=17) — Wire Format Correction
+
+The Android app uses a **12-byte payload**, not 4 bytes:
+
+```
+SET head=100 side=0:  64 00 ff ff ff ff ff ff ff ff ff ff
+SET foot=100 side=0:  ff ff 64 00 ff ff ff ff ff ff ff ff
+```
+
+| Bytes | Field    |
+| ----- | -------- |
+| 0–1   | head value (low byte first), `ff ff` = "do not change" |
+| 2–3   | foot value, `ff ff` = "do not change"                  |
+| 4–11  | additional axes, also `ff ff` masked when not changing |
+
+`0xff` is a "leave alone" sentinel for axes that should not move. Our current
+implementation sends a 4-byte `[head, 0, foot, 0]` payload which is the truncated
+version of the same format and appears to work, but the 12-byte form with masks
+is the official format and lets you change one axis without disturbing the other.
 
 ### Foundation System Status (func=37) — Tested 2026-03-31
 
@@ -593,17 +681,29 @@ Evidence from APK analysis:
 A 2+ minute passive listening test with someone in the bed confirmed: zero unsolicited
 notifications received. Polling is the only option.
 
+**Reconfirmed via Android BT HCI capture (2026-04-26):** A ~140s capture of the
+official SleepIQ app spanning multiple bed transitions (get-in/get-out, snore
+preset, light toggles, sleep number adjust) shows the app calls `func=97`
+**exactly once** at session startup — response is only 4 bytes (chamber types,
+no occupancy bytes 4-7). Functions 24, 25, and 97 are never polled during bed
+transitions. The app sources presence from the cloud `/bed/familyStatus`
+endpoint, not BLE.
+
 ---
 
 ## Unexplored / Partially Explored Areas
 
 - **Bed presence/occupancy** — **NOT AVAILABLE over BLE on firmware 0.4.x.**
   func=24/25 always return 0. func=97 returns chamber type only (4 bytes),
-  not the full 8-byte response with occupancy fields. The app falls back to
-  the cloud REST API (`/bed/familyStatus`) for presence on this firmware.
+  not the full 8-byte response with occupancy fields. Confirmed by Android BT
+  HCI capture: the official app does not poll presence over BLE on this firmware
+  and falls back to the cloud REST API (`/bed/familyStatus`).
 - ~~Push notifications~~ — **NOT SUPPORTED:** bed is purely request/response
-- **Foundation position readback** — func=5 returns 11 bytes but always zeros (may need
-  different addressing or cmd type)
+- ~~Foundation position readback~~ — **TESTED 2026-04-26:** func=5 always returns
+  zeros, but **func=18 (cmd=0x42) returns live foundation status** including
+  movement flag (byte 0 bit 0) and at least one head position (byte 2). See
+  "Foundation Status (func=18)" section. Used by the official app for movement
+  tracking during preset moves.
 - **Massage control** — func=17 with cmd=0x42 and 12-byte payload (from decompiled code)
 - ~~Underbed lights~~ — **IMPLEMENTED:** cmd=0x92 func=19 for read, cmd=0x42 func=19 for write
 - **Foot warming** — func=42 read, func=41 write (cmd=0x42). Not tested

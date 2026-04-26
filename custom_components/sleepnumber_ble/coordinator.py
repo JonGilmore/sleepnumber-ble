@@ -88,11 +88,16 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
         _LOGGER.debug("Fast poll (%d remaining)", self._fast_poll_remaining)
         await self.async_request_refresh()
 
-        if self.data and not self.data.left_pumping and not self.data.right_pumping:
-            _LOGGER.debug("Pump idle, stopping fast poll")
+        if self.data and not self._bed_busy(self.data):
+            _LOGGER.debug("Bed settled, stopping fast poll")
             self._fast_poll_remaining = 0
         elif self._fast_poll_remaining > 0:
             self._schedule_fast_poll()
+
+    @staticmethod
+    def _bed_busy(data: BedStatus) -> bool:
+        """True if pump or foundation is actively moving."""
+        return data.left_pumping or data.right_pumping or data.foundation_moving
 
     async def _async_update_data(self) -> BedStatus:
         """Full status fetch from the bed."""
@@ -136,6 +141,8 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
             if not success:
                 raise UpdateFailed("Failed to set preset")
 
+        self._start_fast_polling()
+
     async def async_set_underbed_light(self, on: bool) -> None:
         """Turn underbed light on or off."""
         async with self._ble_lock:
@@ -160,4 +167,4 @@ class SleepNumberBLECoordinator(DataUpdateCoordinator[BedStatus]):
             if not success:
                 raise UpdateFailed("Failed to set foundation position")
 
-        await self.async_request_refresh()
+        self._start_fast_polling()
