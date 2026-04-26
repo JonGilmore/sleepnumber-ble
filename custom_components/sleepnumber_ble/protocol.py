@@ -134,7 +134,6 @@ def _parse_foundation_status(notifications: list[bytes]) -> dict | None:
                 continue
             hdr = data[2:]
             func = hdr[8] & 0x7F
-            plen = hdr[9] & 0x0F
             if func != MCR_FUNC_FOUNDATION_STATUS:
                 continue
             payload = hdr[10:]
